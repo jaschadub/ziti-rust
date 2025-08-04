@@ -1,0 +1,1 @@
+// This file is not needed - integration tests are organized as separate files
