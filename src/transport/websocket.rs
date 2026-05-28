@@ -141,6 +141,14 @@ impl WebSocketTransport {
         &self.url
     }
 
+    /// Mutable access to the underlying WebSocket stream.
+    ///
+    /// Exposes the `Sink`/`Stream` so `ZitiStream` can drive it directly from
+    /// its `AsyncRead`/`AsyncWrite` poll methods.
+    pub fn stream_mut(&mut self) -> &mut WebSocketStream<TlsStream<TcpStream>> {
+        &mut self.stream
+    }
+
     /// Check if the connection is closed
     pub fn is_closed(&self) -> bool {
         // Note: tokio-tungstenite doesn't provide a direct way to check if closed
