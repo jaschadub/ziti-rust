@@ -5,14 +5,19 @@
 use crate::config::ZitiConfig;
 use crate::connection::ZitiStream;
 use crate::error::{ZitiError, ZitiResult};
-use crate::identity::{self, IdentityManager};
+use crate::identity::credentials::Credentials;
+use crate::identity::{self, IdentityConfig, IdentityManager};
 use crate::service::list_services;
 use crate::session::SessionManager;
 use crate::transport::{TlsConfig, WebSocketTransport};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
+
+/// Default timeout applied to controller API requests.
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Main Context struct for Ziti SDK operations
 ///
@@ -53,29 +58,45 @@ use url::Url;
 pub struct Context {
     identity_manager: Arc<IdentityManager>,
     session_manager: SessionManager,
+    connect_timeout: Duration,
 }
 
 impl Context {
     /// Create a new Context from configuration
     ///
-    /// Creates a new Ziti context using the provided configuration.
-    /// This method is currently not implemented and will be available in future versions.
+    /// Builds a Context directly from a [`ZitiConfig`] that already holds loaded
+    /// identity credentials (certificate chain, private key and CA store).
     ///
     /// # Arguments
     ///
-    /// * `_config` - The Ziti configuration containing connection details
+    /// * `config` - The Ziti configuration containing the controller URL and identity
     ///
     /// # Returns
     ///
     /// * `ZitiResult<Self>` - A new Context instance on success
-    ///
-    /// # Note
-    ///
-    /// This method is currently unimplemented. Use [`Context::from_file`] instead.
-    pub async fn new(_config: ZitiConfig) -> ZitiResult<Self> {
-        // For now, we'll implement a basic version that loads from identity file
-        // In practice, ZitiConfig would contain the identity file path
-        todo!("Implement Context::new - requires ZitiConfig structure definition")
+    pub async fn new(config: ZitiConfig) -> ZitiResult<Self> {
+        let identity_config = IdentityConfig::new(
+            config.controller_url.to_string(),
+            config.identity.id.clone(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+
+        let credentials = Credentials::new(
+            config.identity.certificate_chain.clone(),
+            config.identity.private_key.clone_key(),
+            config.identity.ca_store.clone(),
+        );
+
+        let identity_manager = IdentityManager::new(identity_config, credentials);
+        let session_manager = SessionManager::new(identity_manager.clone());
+
+        Ok(Self {
+            identity_manager: Arc::new(identity_manager),
+            session_manager,
+            connect_timeout: config.connect_timeout,
+        })
     }
 
     /// Create a new Context with existing IdentityManager and SessionManager
@@ -109,6 +130,7 @@ impl Context {
         Self {
             identity_manager: Arc::new(identity_manager),
             session_manager,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
     }
 
@@ -154,7 +176,18 @@ impl Context {
         Ok(Self {
             identity_manager: Arc::new(identity_manager),
             session_manager,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         })
+    }
+
+    /// Override the timeout used for controller API requests.
+    pub(crate) fn set_connect_timeout(&mut self, timeout: Duration) {
+        self.connect_timeout = timeout;
+    }
+
+    /// The timeout applied to controller API requests made by this context.
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
     }
 
     /// Dial a service by name
@@ -391,10 +424,13 @@ impl Context {
     async fn get_service_terminators(&self, service_id: &str) -> ZitiResult<Vec<EdgeRouter>> {
         // Get API session for authentication
         let api_session = self.session_manager.get_api_session().await?;
-        
+
         // Create HTTP client
-        let client = reqwest::Client::new();
-        
+        let client = reqwest::Client::builder()
+            .timeout(self.connect_timeout)
+            .build()
+            .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
+
         // Build terminators endpoint URL
         let terminators_url = format!(
             "{}/services/{}/terminators",

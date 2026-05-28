@@ -12,11 +12,6 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::tungstenite::Message;
 
-/// Combined trait for async stream operations
-pub trait AsyncStream: AsyncRead + AsyncWrite + Send + Unpin {}
-
-impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
-
 /// Main stream type for Ziti connections
 ///
 /// `ZitiStream` provides a bidirectional communication channel over the Ziti network.
@@ -111,25 +106,6 @@ impl ZitiStream {
             read_buffer: VecDeque::new(),
             closed: false,
         }
-    }
-
-    /// Create a new ZitiStream (legacy constructor for compatibility)
-    ///
-    /// This method is deprecated and will be removed in future versions.
-    /// Use [`ZitiStream::from_transport`] instead.
-    ///
-    /// # Arguments
-    ///
-    /// * `_inner` - Legacy async stream (unused)
-    ///
-    /// # Panics
-    ///
-    /// This method will panic as it is not implemented. Use `from_transport()` instead.
-    #[deprecated(since = "0.1.0", note = "Use ZitiStream::from_transport() instead")]
-    pub fn new(_inner: Box<dyn AsyncStream>) -> Self {
-        // This is a placeholder for backward compatibility
-        // In practice, use from_transport()
-        todo!("Use ZitiStream::from_transport() instead")
     }
 
     /// Check if the stream is closed

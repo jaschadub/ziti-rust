@@ -21,6 +21,8 @@ pub struct WebSocketTransport {
     stream: WebSocketStream<TlsStream<TcpStream>>,
     /// Remote URL
     url: Url,
+    /// Whether the connection has been closed
+    closed: bool,
 }
 
 impl WebSocketTransport {
@@ -91,6 +93,7 @@ impl WebSocketTransport {
         Ok(Self {
             stream: ws_stream,
             url,
+            closed: false,
         })
     }
 
@@ -133,7 +136,9 @@ impl WebSocketTransport {
     pub async fn close(&mut self) -> ZitiResult<()> {
         self.stream.close(None).await.map_err(|e| {
             ZitiError::ConnectionFailed(format!("Failed to close WebSocket connection: {}", e))
-        })
+        })?;
+        self.closed = true;
+        Ok(())
     }
 
     /// Get the connection URL
@@ -149,11 +154,9 @@ impl WebSocketTransport {
         &mut self.stream
     }
 
-    /// Check if the connection is closed
+    /// Check if the connection has been closed via [`WebSocketTransport::close`]
     pub fn is_closed(&self) -> bool {
-        // Note: tokio-tungstenite doesn't provide a direct way to check if closed
-        // This is a placeholder implementation
-        false
+        self.closed
     }
 
 }

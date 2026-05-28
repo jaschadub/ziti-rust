@@ -3,38 +3,49 @@
 //! Provides a builder pattern for configuring and creating Context instances.
 
 use super::Context;
-use crate::error::ZitiResult;
-use std::path::Path;
+use crate::error::{ZitiError, ZitiResult};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Builder for creating Context instances
 pub struct ContextBuilder {
-    _identity_file: Option<String>,
-    _connect_timeout: Option<Duration>,
+    identity_file: Option<PathBuf>,
+    connect_timeout: Option<Duration>,
 }
 
 impl ContextBuilder {
     /// Create a new ContextBuilder
     pub fn new() -> Self {
         Self {
-            _identity_file: None,
-            _connect_timeout: None,
+            identity_file: None,
+            connect_timeout: None,
         }
     }
 
     /// Set the identity file path
-    pub fn identity_file<P: AsRef<Path>>(self, _path: P) -> Self {
-        todo!("Implement identity_file")
+    pub fn identity_file<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.identity_file = Some(path.as_ref().to_path_buf());
+        self
     }
 
     /// Set the connection timeout
-    pub fn connect_timeout(self, _timeout: Duration) -> Self {
-        todo!("Implement connect_timeout")
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = Some(timeout);
+        self
     }
 
     /// Build the Context
     pub async fn build(self) -> ZitiResult<Context> {
-        todo!("Implement build")
+        let identity_file = self.identity_file.ok_or_else(|| {
+            ZitiError::ConfigError("an identity file path is required to build a Context".to_string())
+        })?;
+
+        let mut context = Context::from_file(identity_file).await?;
+        if let Some(timeout) = self.connect_timeout {
+            context.set_connect_timeout(timeout);
+        }
+
+        Ok(context)
     }
 }
 
@@ -51,59 +62,30 @@ mod tests {
     #[test]
     fn test_context_builder_creation() {
         let builder = ContextBuilder::new();
-        assert!(builder._identity_file.is_none());
-        assert!(builder._connect_timeout.is_none());
+        assert!(builder.identity_file.is_none());
+        assert!(builder.connect_timeout.is_none());
     }
 
     #[test]
     fn test_context_builder_default() {
         let builder = ContextBuilder::default();
-        assert!(builder._identity_file.is_none());
-        assert!(builder._connect_timeout.is_none());
+        assert!(builder.identity_file.is_none());
+        assert!(builder.connect_timeout.is_none());
     }
 
     #[test]
-    fn test_context_builder_chainable() {
-        let builder = ContextBuilder::new();
-        // Test that methods return Self for chaining
-        // Note: These are todo!() implementations, so we can't test actual functionality
-        // But we can test the builder pattern structure exists
-        let _builder_ref = &builder;
+    fn test_context_builder_sets_fields() {
+        let builder = ContextBuilder::new()
+            .identity_file("identity.json")
+            .connect_timeout(Duration::from_secs(10));
+
+        assert_eq!(builder.identity_file, Some(PathBuf::from("identity.json")));
+        assert_eq!(builder.connect_timeout, Some(Duration::from_secs(10)));
     }
 
-    #[test]
-    fn test_context_builder_with_duration() {
-        let duration = Duration::from_secs(30);
-        let builder = ContextBuilder::new();
-        
-        // Test that we have the method signature
-        // Note: This will panic with todo!() but we're testing the interface exists
-        // In a real implementation, we would test the actual functionality
-        let _duration_ref = &duration;
-        let _builder_ref = &builder;
-    }
-
-    #[test]
-    fn test_context_builder_fields() {
-        let mut builder = ContextBuilder::new();
-        
-        // Test that we can access the private fields through construction
-        builder._identity_file = Some("test.json".to_string());
-        builder._connect_timeout = Some(Duration::from_secs(10));
-        
-        assert_eq!(builder._identity_file, Some("test.json".to_string()));
-        assert_eq!(builder._connect_timeout, Some(Duration::from_secs(10)));
-    }
-
-    #[test]
-    fn test_context_builder_types() {
-        // Test that the builder has the expected field types
-        let builder = ContextBuilder {
-            _identity_file: Some("identity.json".to_string()),
-            _connect_timeout: Some(Duration::from_millis(5000)),
-        };
-        
-        assert!(builder._identity_file.is_some());
-        assert!(builder._connect_timeout.is_some());
+    #[tokio::test]
+    async fn test_build_without_identity_file_errors() {
+        let result = ContextBuilder::new().build().await;
+        assert!(matches!(result, Err(ZitiError::ConfigError(_))));
     }
 }
