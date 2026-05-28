@@ -673,22 +673,22 @@ sequenceDiagram
 ### Required Crates
 ```toml
 [dependencies]
-tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = "0.20"
-rustls = "0.21"
-tokio-rustls = "0.24"
-reqwest = { version = "0.11", features = ["rustls-tls"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-url = "2.4"
-bytes = "1.4"
-thiserror = "1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.29"
+rustls = "0.23"
+tokio-rustls = "0.26"
+reqwest = { version = "0.13", features = ["rustls", "webpki-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2.5"
+bytes = "1"
+thiserror = "2"
 async-trait = "0.1"
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["serde"] }
-rustls-pemfile = "1.0"
-webpki-roots = "0.25"
-rand = "0.8"
+rustls-pemfile = "2"
+webpki-roots = "1"
+rand = "0.10"
 ```
 
 ## Conclusion

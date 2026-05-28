@@ -129,7 +129,8 @@ pub async fn load_from_file<P: AsRef<Path>>(path: P) -> ZitiResult<IdentityManag
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustls::{Certificate, PrivateKey, RootCertStore};
+    use rustls::RootCertStore;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
     fn create_mock_config() -> Config {
         Config::new(
@@ -143,9 +144,9 @@ mod tests {
 
     fn create_mock_credentials() -> Credentials {
         Credentials::new(
-            vec![Certificate(vec![0u8; 32])], // Mock certificate
-            PrivateKey(vec![0u8; 32]),        // Mock private key
-            RootCertStore::empty(),           // Empty CA store
+            vec![CertificateDer::from(vec![0u8; 32])], // Mock certificate
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(vec![0u8; 32])), // Mock private key
+            RootCertStore::empty(),                    // Empty CA store
         )
     }
 

@@ -6,7 +6,8 @@ use crate::error::{ZitiError, ZitiResult};
 use crate::transport::tls::TlsConfig;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio_rustls::{rustls::ServerName, TlsConnector, client::TlsStream};
+use tokio_rustls::{TlsConnector, client::TlsStream};
+use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_tungstenite::{
     tungstenite::Message,
     WebSocketStream,
@@ -63,9 +64,11 @@ impl WebSocketTransport {
         let tls_connector = TlsConnector::from(tls_config.client_config());
 
         // Parse server name for TLS
-        let server_name = ServerName::try_from(host).map_err(|e| {
-            ZitiError::ConfigError(format!("Invalid server name '{}': {}", host, e))
-        })?;
+        let server_name = ServerName::try_from(host)
+            .map_err(|e| {
+                ZitiError::ConfigError(format!("Invalid server name '{}': {}", host, e))
+            })?
+            .to_owned();
 
         // Establish TCP connection
         let tcp_stream = TcpStream::connect((host, port))

@@ -33,16 +33,17 @@ impl ZitiConfig {
 mod tests {
     use super::*;
     use crate::identity::credentials::Identity;
-    use rustls::{Certificate, PrivateKey, RootCertStore};
+    use rustls::RootCertStore;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use std::time::Duration;
     use url::Url;
 
     fn create_mock_identity() -> Identity {
         Identity::new(
             "test-id".to_string(),
-            vec![Certificate(vec![0u8; 32])], // Mock certificate
-            PrivateKey(vec![0u8; 32]),        // Mock private key
-            RootCertStore::empty(),           // Empty CA store
+            vec![CertificateDer::from(vec![0u8; 32])], // Mock certificate
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(vec![0u8; 32])), // Mock private key
+            RootCertStore::empty(),                    // Empty CA store
         )
     }
 

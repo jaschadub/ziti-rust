@@ -4,29 +4,39 @@
 
 use crate::error::{ZitiError, ZitiResult};
 use crate::identity::config::Config;
-use rustls::{Certificate, PrivateKey, RootCertStore};
-use rustls_pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
-use std::fs::File;
+use rustls::RootCertStore;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls_pemfile::{certs, private_key};
 use std::io::BufReader;
 use std::path::Path;
 use tokio::fs;
 
 /// Credentials structure to hold client certificate and private key
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Credentials {
     /// Client certificate chain
-    pub certificate_chain: Vec<Certificate>,
+    pub certificate_chain: Vec<CertificateDer<'static>>,
     /// Private key for the client certificate
-    pub private_key: PrivateKey,
+    pub private_key: PrivateKeyDer<'static>,
     /// CA certificate store for validation
     pub ca_store: RootCertStore,
+}
+
+impl Clone for Credentials {
+    fn clone(&self) -> Self {
+        Self {
+            certificate_chain: self.certificate_chain.clone(),
+            private_key: self.private_key.clone_key(),
+            ca_store: self.ca_store.clone(),
+        }
+    }
 }
 
 impl Credentials {
     /// Create new Credentials instance
     pub fn new(
-        certificate_chain: Vec<Certificate>,
-        private_key: PrivateKey,
+        certificate_chain: Vec<CertificateDer<'static>>,
+        private_key: PrivateKeyDer<'static>,
         ca_store: RootCertStore,
     ) -> Self {
         Self {
@@ -51,7 +61,7 @@ impl Credentials {
     }
 
     /// Load certificates from a PEM file
-    async fn load_certificates(cert_path: &Path) -> ZitiResult<Vec<Certificate>> {
+    async fn load_certificates(cert_path: &Path) -> ZitiResult<Vec<CertificateDer<'static>>> {
         let cert_file = fs::File::open(cert_path).await.map_err(|e| {
             ZitiError::ConfigError(format!(
                 "Failed to open certificate file {:?}: {}",
@@ -62,12 +72,14 @@ impl Credentials {
         let cert_file = cert_file.into_std().await;
         let mut cert_reader = BufReader::new(cert_file);
 
-        let cert_chain = certs(&mut cert_reader).map_err(|e| {
-            ZitiError::ConfigError(format!(
-                "Failed to parse certificate file {:?}: {}",
-                cert_path, e
-            ))
-        })?;
+        let cert_chain = certs(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                ZitiError::ConfigError(format!(
+                    "Failed to parse certificate file {:?}: {}",
+                    cert_path, e
+                ))
+            })?;
 
         if cert_chain.is_empty() {
             return Err(ZitiError::ConfigError(format!(
@@ -76,11 +88,11 @@ impl Credentials {
             )));
         }
 
-        Ok(cert_chain.into_iter().map(Certificate).collect())
+        Ok(cert_chain)
     }
 
     /// Load private key from a PEM file
-    async fn load_private_key(key_path: &Path) -> ZitiResult<PrivateKey> {
+    async fn load_private_key(key_path: &Path) -> ZitiResult<PrivateKeyDer<'static>> {
         let key_file = fs::File::open(key_path).await.map_err(|e| {
             ZitiError::ConfigError(format!(
                 "Failed to open private key file {:?}: {}",
@@ -91,37 +103,16 @@ impl Credentials {
         let key_file = key_file.into_std().await;
         let mut key_reader = BufReader::new(key_file);
 
-        // Try PKCS8 format first
-        if let Ok(mut keys) = pkcs8_private_keys(&mut key_reader) {
-            if !keys.is_empty() {
-                return Ok(PrivateKey(keys.remove(0)));
-            }
-        }
-
-        // Reset reader and try RSA format
-        let key_file = File::open(key_path).map_err(|e| {
-            ZitiError::ConfigError(format!(
-                "Failed to reopen private key file {:?}: {}",
-                key_path, e
-            ))
-        })?;
-        let mut key_reader = BufReader::new(key_file);
-
-        let keys = rsa_private_keys(&mut key_reader).map_err(|e| {
-            ZitiError::ConfigError(format!(
-                "Failed to parse private key file {:?}: {}",
-                key_path, e
-            ))
-        })?;
-
-        if keys.is_empty() {
-            return Err(ZitiError::ConfigError(format!(
-                "No private keys found in file {:?}",
-                key_path
-            )));
-        }
-
-        Ok(PrivateKey(keys[0].clone()))
+        private_key(&mut key_reader)
+            .map_err(|e| {
+                ZitiError::ConfigError(format!(
+                    "Failed to parse private key file {:?}: {}",
+                    key_path, e
+                ))
+            })?
+            .ok_or_else(|| {
+                ZitiError::ConfigError(format!("No private keys found in file {:?}", key_path))
+            })
     }
 
     /// Load CA certificates from a PEM file
@@ -136,12 +127,14 @@ impl Credentials {
         let ca_file = ca_file.into_std().await;
         let mut ca_reader = BufReader::new(ca_file);
 
-        let ca_certs = certs(&mut ca_reader).map_err(|e| {
-            ZitiError::ConfigError(format!(
-                "Failed to parse CA certificate file {:?}: {}",
-                ca_path, e
-            ))
-        })?;
+        let ca_certs = certs(&mut ca_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                ZitiError::ConfigError(format!(
+                    "Failed to parse CA certificate file {:?}: {}",
+                    ca_path, e
+                ))
+            })?;
 
         if ca_certs.is_empty() {
             return Err(ZitiError::ConfigError(format!(
@@ -152,7 +145,7 @@ impl Credentials {
 
         let mut ca_store = RootCertStore::empty();
         for cert in ca_certs {
-            ca_store.add(&Certificate(cert)).map_err(|e| {
+            ca_store.add(cert).map_err(|e| {
                 ZitiError::ConfigError(format!("Failed to add CA certificate: {}", e))
             })?;
         }
@@ -162,20 +155,31 @@ impl Credentials {
 }
 
 /// Identity credentials for Ziti authentication
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Identity {
     pub id: String,
-    pub certificate_chain: Vec<Certificate>,
-    pub private_key: PrivateKey,
+    pub certificate_chain: Vec<CertificateDer<'static>>,
+    pub private_key: PrivateKeyDer<'static>,
     pub ca_store: RootCertStore,
+}
+
+impl Clone for Identity {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            certificate_chain: self.certificate_chain.clone(),
+            private_key: self.private_key.clone_key(),
+            ca_store: self.ca_store.clone(),
+        }
+    }
 }
 
 impl Identity {
     /// Create a new Identity
     pub fn new(
         id: String,
-        certificate_chain: Vec<Certificate>,
-        private_key: PrivateKey,
+        certificate_chain: Vec<CertificateDer<'static>>,
+        private_key: PrivateKeyDer<'static>,
         ca_store: RootCertStore,
     ) -> Self {
         Self {
@@ -200,14 +204,15 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustls::{Certificate, PrivateKey, RootCertStore};
+    use rustls::RootCertStore;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
-    fn create_mock_certificate() -> Certificate {
-        Certificate(vec![0u8; 32]) // Mock certificate data
+    fn create_mock_certificate() -> CertificateDer<'static> {
+        CertificateDer::from(vec![0u8; 32]) // Mock certificate data
     }
 
-    fn create_mock_private_key() -> PrivateKey {
-        PrivateKey(vec![0u8; 32]) // Mock private key data
+    fn create_mock_private_key() -> PrivateKeyDer<'static> {
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(vec![0u8; 32])) // Mock private key data
     }
 
     fn create_mock_ca_store() -> RootCertStore {
@@ -220,10 +225,10 @@ mod tests {
         let private_key = create_mock_private_key();
         let ca_store = create_mock_ca_store();
 
-        let credentials = Credentials::new(cert_chain.clone(), private_key.clone(), ca_store);
+        let credentials = Credentials::new(cert_chain.clone(), private_key.clone_key(), ca_store);
 
         assert_eq!(credentials.certificate_chain.len(), 1);
-        assert_eq!(credentials.private_key.0, private_key.0);
+        assert_eq!(credentials.private_key.secret_der(), private_key.secret_der());
     }
 
     #[test]
@@ -236,7 +241,7 @@ mod tests {
         let cloned = original.clone();
 
         assert_eq!(cloned.certificate_chain.len(), original.certificate_chain.len());
-        assert_eq!(cloned.private_key.0, original.private_key.0);
+        assert_eq!(cloned.private_key.secret_der(), original.private_key.secret_der());
     }
 
     #[test]
@@ -246,11 +251,11 @@ mod tests {
         let private_key = create_mock_private_key();
         let ca_store = create_mock_ca_store();
 
-        let identity = Identity::new(id.clone(), cert_chain.clone(), private_key.clone(), ca_store);
+        let identity = Identity::new(id.clone(), cert_chain.clone(), private_key.clone_key(), ca_store);
 
         assert_eq!(identity.id, id);
         assert_eq!(identity.certificate_chain.len(), 1);
-        assert_eq!(identity.private_key.0, private_key.0);
+        assert_eq!(identity.private_key.secret_der(), private_key.secret_der());
     }
 
     #[test]
@@ -265,7 +270,7 @@ mod tests {
 
         assert_eq!(cloned.id, original.id);
         assert_eq!(cloned.certificate_chain.len(), original.certificate_chain.len());
-        assert_eq!(cloned.private_key.0, original.private_key.0);
+        assert_eq!(cloned.private_key.secret_der(), original.private_key.secret_der());
     }
 
     #[test]
@@ -281,13 +286,13 @@ mod tests {
         let cert_chain = vec![create_mock_certificate()];
         let private_key = create_mock_private_key();
         let ca_store = create_mock_ca_store();
-        let credentials = Credentials::new(cert_chain.clone(), private_key.clone(), ca_store);
+        let credentials = Credentials::new(cert_chain.clone(), private_key.clone_key(), ca_store);
 
         let identity = Identity::from_config_and_credentials(&config, credentials);
 
         assert_eq!(identity.id, "config-id");
         assert_eq!(identity.certificate_chain.len(), 1);
-        assert_eq!(identity.private_key.0, private_key.0);
+        assert_eq!(identity.private_key.secret_der(), private_key.secret_der());
     }
 
     #[test]

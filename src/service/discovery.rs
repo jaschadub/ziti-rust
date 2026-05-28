@@ -151,12 +151,12 @@ fn create_service_client(session_manager: &SessionManager) -> ZitiResult<Client>
 }
 
 /// Serialize certificate chain to PEM format for reqwest
-fn serialize_cert_chain(cert_chain: &[rustls::Certificate]) -> ZitiResult<Vec<u8>> {
+fn serialize_cert_chain(cert_chain: &[rustls::pki_types::CertificateDer]) -> ZitiResult<Vec<u8>> {
     let mut pem_data = Vec::new();
 
     for cert in cert_chain {
         pem_data.extend_from_slice(b"-----BEGIN CERTIFICATE-----\n");
-        let cert_b64 = base64_encode(&cert.0);
+        let cert_b64 = base64_encode(cert.as_ref());
         for chunk in cert_b64.as_bytes().chunks(64) {
             pem_data.extend_from_slice(chunk);
             pem_data.push(b'\n');
@@ -168,11 +168,11 @@ fn serialize_cert_chain(cert_chain: &[rustls::Certificate]) -> ZitiResult<Vec<u8
 }
 
 /// Serialize private key to PEM format for reqwest
-fn serialize_private_key(private_key: &rustls::PrivateKey) -> ZitiResult<Vec<u8>> {
+fn serialize_private_key(private_key: &rustls::pki_types::PrivateKeyDer) -> ZitiResult<Vec<u8>> {
     let mut pem_data = Vec::new();
 
     pem_data.extend_from_slice(b"-----BEGIN PRIVATE KEY-----\n");
-    let key_b64 = base64_encode(&private_key.0);
+    let key_b64 = base64_encode(private_key.secret_der());
     for chunk in key_b64.as_bytes().chunks(64) {
         pem_data.extend_from_slice(chunk);
         pem_data.push(b'\n');
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn test_serialize_cert_chain_service() {
         let cert_data = b"test certificate data for service";
-        let cert = rustls::Certificate(cert_data.to_vec());
+        let cert = rustls::pki_types::CertificateDer::from(cert_data.to_vec());
         let cert_chain = vec![cert];
 
         let result = serialize_cert_chain(&cert_chain);
@@ -368,7 +368,9 @@ mod tests {
     #[test]
     fn test_serialize_private_key_service() {
         let key_data = b"test private key data for service";
-        let private_key = rustls::PrivateKey(key_data.to_vec());
+        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(key_data.to_vec()),
+        );
 
         let result = serialize_private_key(&private_key);
         assert!(result.is_ok());

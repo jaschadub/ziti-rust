@@ -6,7 +6,6 @@ use crate::error::{ZitiError, ZitiResult};
 use crate::identity::IdentityManager;
 use rustls::{ClientConfig, RootCertStore};
 use std::sync::Arc;
-use webpki_roots;
 
 /// TLS configuration manager for Ziti connections
 #[derive(Debug, Clone)]
@@ -33,20 +32,16 @@ impl TlsConfig {
     pub fn from_identity(identity: &IdentityManager) -> ZitiResult<Self> {
         // Start with the identity's CA store
         let mut root_store = identity.credentials().ca_store.clone();
-        
+
         // Add system root CAs as fallback
-        for cert in webpki_roots::TLS_SERVER_ROOTS {
-            root_store.add(&rustls::Certificate(cert.spki.to_vec()))
-                .map_err(|e| ZitiError::ConfigError(format!("Failed to add root CA: {}", e)))?;
-        }
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
         // Create client configuration with mTLS
         let client_config = ClientConfig::builder()
-            .with_safe_defaults()
             .with_root_certificates(root_store)
             .with_client_auth_cert(
                 identity.credentials().certificate_chain.clone(),
-                identity.credentials().private_key.clone(),
+                identity.credentials().private_key.clone_key(),
             )
             .map_err(|e| ZitiError::ConfigError(format!("Failed to create TLS config: {}", e)))?;
 
@@ -64,7 +59,6 @@ impl TlsConfig {
     pub fn new() -> Self {
         let root_store = RootCertStore::empty();
         let client_config = ClientConfig::builder()
-            .with_safe_defaults()
             .with_root_certificates(root_store)
             .with_no_client_auth();
 
