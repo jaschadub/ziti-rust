@@ -455,7 +455,7 @@ impl Context {
         let hello_msg = create_hello_message(service_id)?;
         
         // Send Hello message
-        transport.send(Message::Binary(hello_msg)).await?;
+        transport.send(Message::Binary(hello_msg.into())).await?;
         
         // Wait for response
         let response = transport.receive().await?;
@@ -574,7 +574,8 @@ fn validate_hello_response(data: &[u8]) -> ZitiResult<()> {
 mod tests {
     use super::*;
     use crate::identity::{credentials::Credentials, IdentityConfig};
-    use rustls::{Certificate, PrivateKey, RootCertStore};
+    use rustls::RootCertStore;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
     fn create_test_identity_manager() -> IdentityManager {
         let config = IdentityConfig::new(
@@ -589,8 +590,8 @@ mod tests {
         let key_data = b"test private key data";
         
         let credentials = Credentials::new(
-            vec![Certificate(cert_data.to_vec())],
-            PrivateKey(key_data.to_vec()),
+            vec![CertificateDer::from(cert_data.to_vec())],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_data.to_vec())),
             RootCertStore::empty(),
         );
         

@@ -24,8 +24,8 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ziti-sdk = "0.1.0"
-tokio = { version = "1.0", features = ["full"] }
+ziti-sdk = "0.2.0"
+tokio = { version = "1", features = ["full"] }
 ```
 
 ## Getting Started

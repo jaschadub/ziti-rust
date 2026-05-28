@@ -250,7 +250,7 @@ impl ZitiStream {
     async fn send_write_buffer(&mut self) -> Result<(), std::io::Error> {
         if !self.write_buffer.is_empty() {
             let data = std::mem::take(&mut self.write_buffer);
-            let message = Message::Binary(data);
+            let message = Message::Binary(data.into());
             
             self.transport.send(message).await.map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::Other, format!("Transport send failed: {}", e))

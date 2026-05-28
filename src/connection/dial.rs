@@ -169,7 +169,7 @@ async fn perform_ziti_handshake(
     let hello_msg = create_hello_message(service_id)?;
     
     // Send Hello message
-    transport.send(Message::Binary(hello_msg)).await?;
+    transport.send(Message::Binary(hello_msg.into())).await?;
     
     // Wait for response
     let response = transport.receive().await?;
