@@ -10,6 +10,7 @@ use crate::service::list_services;
 use crate::transport::{TlsConfig, WebSocketTransport};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
 /// Listen on a Ziti service by name
@@ -31,7 +32,7 @@ use url::Url;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, connection::listen};
 ///
 /// #[tokio::main]
@@ -71,7 +72,7 @@ pub async fn listen(service_name: &str, context: &Context) -> ZitiResult<ZitiLis
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, connection::listen_with_options, ListenOptions};
 ///
 /// #[tokio::main]
@@ -124,11 +125,12 @@ pub async fn listen_with_options(
     let ws_url = Url::parse(&format!("wss://{}:{}/ws", edge_router.hostname, edge_router.port))
         .map_err(|e| ZitiError::ConfigError(format!("Invalid edge router URL: {}", e)))?;
     
-    let transport = WebSocketTransport::connect(ws_url, tls_config).await?;
+    let mut transport = WebSocketTransport::connect(ws_url, tls_config).await?;
 
-    // Step 6: Perform listen handshake
-    // TODO: Implement proper listen handshake protocol
-    
+    // Step 6: Perform the bind handshake so the edge router routes connections
+    // for this terminator to us.
+    perform_listen_handshake(&mut transport, &service.id, &terminator_id).await?;
+
     // Step 7: Create and return ZitiListener
     let (sender, receiver) = mpsc::unbounded_channel();
     
@@ -167,7 +169,7 @@ pub async fn listen_with_options(
 ///
 /// ## Basic echo server
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, ZitiResult};
 /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
 ///
@@ -203,7 +205,7 @@ pub async fn listen_with_options(
 ///
 /// ## Server with connection handling
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, ZitiResult};
 ///
 /// #[tokio::main]
@@ -238,8 +240,9 @@ pub struct ZitiListener {
     terminator_id: String,
     #[allow(dead_code)]
     edge_router: EdgeRouter,
-    #[allow(dead_code)]
     context: Arc<Context>,
+    // Held to keep the edge-router connection (and thus the terminator) alive
+    // for the lifetime of the listener.
     #[allow(dead_code)]
     transport: Option<WebSocketTransport>,
     connection_receiver: mpsc::UnboundedReceiver<ZitiStream>,
@@ -268,7 +271,7 @@ impl ZitiListener {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
     ///
@@ -322,7 +325,7 @@ impl ZitiListener {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
@@ -352,7 +355,7 @@ impl ZitiListener {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
@@ -373,8 +376,20 @@ impl ZitiListener {
 
 impl Drop for ZitiListener {
     fn drop(&mut self) {
-        // TODO: Clean up terminator when listener is dropped
-        // This should send a DELETE request to /terminators/{terminator_id}
+        if self.terminator_id.is_empty() {
+            return;
+        }
+
+        // Deleting the terminator requires an async HTTP request, which can't be
+        // awaited in Drop. Spawn a best-effort cleanup task if a runtime is
+        // available (the common case, since the listener was created in one).
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let context = self.context.clone();
+            let terminator_id = self.terminator_id.clone();
+            handle.spawn(async move {
+                let _ = delete_terminator(&context, &terminator_id).await;
+            });
+        }
     }
 }
 
@@ -401,10 +416,13 @@ struct EdgeRoutersResponse {
 async fn get_available_edge_routers(context: &Context) -> ZitiResult<Vec<EdgeRouter>> {
     // Get API session for authentication
     let api_session = context.session_manager().get_api_session().await?;
-    
+
     // Create HTTP client
-    let client = reqwest::Client::new();
-    
+    let client = reqwest::Client::builder()
+        .timeout(context.connect_timeout())
+        .build()
+        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
+
     // Build edge routers endpoint URL
     let edge_routers_url = format!(
         "{}/current-identity/edge-routers",
@@ -487,10 +505,13 @@ async fn create_terminator(
 ) -> ZitiResult<String> {
     // Get API session for authentication
     let api_session = context.session_manager().get_api_session().await?;
-    
+
     // Create HTTP client
-    let client = reqwest::Client::new();
-    
+    let client = reqwest::Client::builder()
+        .timeout(context.connect_timeout())
+        .build()
+        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
+
     // Build terminators endpoint URL
     let terminators_url = format!(
         "{}/terminators",
@@ -542,4 +563,95 @@ async fn create_terminator(
         })?;
 
     Ok(terminator_response.data.id)
+}
+
+/// Perform the listen (bind) handshake with the edge router.
+///
+/// Announces to the edge router that this connection hosts the given service via
+/// the created terminator, so inbound connections are routed here.
+async fn perform_listen_handshake(
+    transport: &mut WebSocketTransport,
+    service_id: &str,
+    terminator_id: &str,
+) -> ZitiResult<()> {
+    let bind_msg = serde_json::to_vec(&serde_json::json!({
+        "type": "Bind",
+        "service_id": service_id,
+        "terminator_id": terminator_id,
+        "version": "1.0",
+    }))
+    .map_err(|e| ZitiError::ProtocolError {
+        message: format!("Failed to serialize Bind message: {}", e),
+    })?;
+
+    transport.send(Message::Binary(bind_msg.into())).await?;
+
+    match transport.receive().await? {
+        Some(Message::Binary(data)) => validate_bind_response(&data),
+        Some(_) => Err(ZitiError::ProtocolError {
+            message: "Unexpected message type in bind handshake response".to_string(),
+        }),
+        None => Err(ZitiError::ConnectionFailed(
+            "Connection closed during bind handshake".to_string(),
+        )),
+    }
+}
+
+/// Validate the bind handshake response from the edge router.
+fn validate_bind_response(data: &[u8]) -> ZitiResult<()> {
+    let response: serde_json::Value =
+        serde_json::from_slice(data).map_err(|e| ZitiError::ProtocolError {
+            message: format!("Failed to parse bind response: {}", e),
+        })?;
+
+    if let Some(status) = response.get("status")
+        && (status == "ok" || status == "success")
+    {
+        return Ok(());
+    }
+
+    Err(ZitiError::ProtocolError {
+        message: format!("Bind handshake failed: {:?}", response),
+    })
+}
+
+/// Delete a terminator from the controller (best-effort listener cleanup).
+async fn delete_terminator(context: &Context, terminator_id: &str) -> ZitiResult<()> {
+    let api_session = context.session_manager().get_api_session().await?;
+
+    let client = reqwest::Client::builder()
+        .timeout(context.connect_timeout())
+        .build()
+        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
+
+    let url = format!(
+        "{}/terminators/{}",
+        context.identity_manager().zt_api().trim_end_matches('/'),
+        terminator_id
+    );
+
+    let response = client
+        .delete(&url)
+        .header("zt-session", &api_session.token)
+        .send()
+        .await
+        .map_err(|e| {
+            ZitiError::ConnectionFailed(format!("Failed to delete terminator: {}", e))
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(ZitiError::ProtocolError {
+            message: format!(
+                "Delete terminator request failed with status {}: {}",
+                status, error_text
+            ),
+        });
+    }
+
+    Ok(())
 }

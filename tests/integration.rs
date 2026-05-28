@@ -251,10 +251,10 @@ async fn test_concurrent_operations() {
     // Wait for all operations to complete
     let mut success_count = 0;
     for handle in handles {
-        if let Ok(success) = handle.await {
-            if success {
-                success_count += 1;
-            }
+        if let Ok(success) = handle.await
+            && success
+        {
+            success_count += 1;
         }
     }
     

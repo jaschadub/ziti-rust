@@ -8,6 +8,6 @@ pub mod listen;
 pub mod stream;
 
 // Re-export the main dial and listen functions and types
-pub use dial::{dial, ZitiDial, EdgeRouter};
+pub use dial::{dial, EdgeRouter};
 pub use listen::{listen, listen_with_options, ZitiListener};
 pub use stream::ZitiStream;

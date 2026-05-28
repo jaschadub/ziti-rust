@@ -30,7 +30,7 @@ use url::Url;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, connection::dial};
 ///
 /// #[tokio::main]
@@ -106,10 +106,13 @@ struct TerminatorsResponse {
 async fn get_service_terminators(service_id: &str, context: &Context) -> ZitiResult<Vec<EdgeRouter>> {
     // Get API session for authentication
     let api_session = context.session_manager().get_api_session().await?;
-    
+
     // Create HTTP client
-    let client = reqwest::Client::new();
-    
+    let client = reqwest::Client::builder()
+        .timeout(context.connect_timeout())
+        .build()
+        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
+
     // Build terminators endpoint URL
     let terminators_url = format!(
         "{}/services/{}/terminators",
@@ -218,31 +221,16 @@ fn validate_hello_response(data: &[u8]) -> ZitiResult<()> {
     })?;
     
     // Check if response indicates success
-    if let Some(status) = response.get("status") {
-        if status == "ok" || status == "success" {
-            return Ok(());
-        }
+    if let Some(status) = response.get("status")
+        && (status == "ok" || status == "success")
+    {
+        return Ok(());
     }
     
     // If we get here, the handshake failed
     Err(ZitiError::ProtocolError {
         message: format!("Hello handshake failed: {:?}", response),
     })
-}
-
-/// Placeholder struct for dial functionality
-pub struct ZitiDial;
-
-impl ZitiDial {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for ZitiDial {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[cfg(test)]

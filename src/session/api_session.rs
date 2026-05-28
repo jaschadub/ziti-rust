@@ -67,7 +67,7 @@ struct AuthData {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::session::authenticate;
 /// use ziti_sdk::identity::load_from_file;
 ///
@@ -170,7 +170,15 @@ fn parse_ziti_timestamp(timestamp: &str) -> ZitiResult<SystemTime> {
         ZitiError::ConfigError(format!("Failed to parse timestamp {}: {}", timestamp, e))
     })?;
 
-    let duration_since_epoch = Duration::from_secs(offset_dt.unix_timestamp() as u64);
+    let unix_seconds = offset_dt.unix_timestamp();
+    if unix_seconds < 0 {
+        return Err(ZitiError::ConfigError(format!(
+            "Timestamp {} predates the Unix epoch",
+            timestamp
+        )));
+    }
+
+    let duration_since_epoch = Duration::from_secs(unix_seconds as u64);
     Ok(UNIX_EPOCH + duration_since_epoch)
 }
 
@@ -193,15 +201,25 @@ fn serialize_cert_chain(cert_chain: &[rustls::pki_types::CertificateDer]) -> Zit
 
 /// Serialize private key to PEM format for reqwest
 fn serialize_private_key(private_key: &rustls::pki_types::PrivateKeyDer) -> ZitiResult<Vec<u8>> {
+    use rustls::pki_types::PrivateKeyDer;
+
+    // The PEM label must match the key's DER encoding, otherwise reqwest
+    // cannot parse the identity.
+    let label = match private_key {
+        PrivateKeyDer::Pkcs1(_) => "RSA PRIVATE KEY",
+        PrivateKeyDer::Sec1(_) => "EC PRIVATE KEY",
+        _ => "PRIVATE KEY",
+    };
+
     let mut pem_data = Vec::new();
 
-    pem_data.extend_from_slice(b"-----BEGIN PRIVATE KEY-----\n");
+    pem_data.extend_from_slice(format!("-----BEGIN {}-----\n", label).as_bytes());
     let key_b64 = base64_encode(private_key.secret_der());
     for chunk in key_b64.as_bytes().chunks(64) {
         pem_data.extend_from_slice(chunk);
         pem_data.push(b'\n');
     }
-    pem_data.extend_from_slice(b"-----END PRIVATE KEY-----\n");
+    pem_data.extend_from_slice(format!("-----END {}-----\n", label).as_bytes());
 
     Ok(pem_data)
 }

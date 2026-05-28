@@ -14,6 +14,12 @@ pub struct TlsConfig {
     client_config: Arc<ClientConfig>,
 }
 
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TlsConfig {
     /// Create a new TLS configuration from an identity manager
     ///

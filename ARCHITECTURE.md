@@ -688,7 +688,6 @@ uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["serde"] }
 rustls-pemfile = "2"
 webpki-roots = "1"
-rand = "0.10"
 ```
 
 ## Conclusion

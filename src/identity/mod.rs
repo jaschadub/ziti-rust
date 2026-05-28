@@ -5,7 +5,6 @@
 
 pub mod config;
 pub mod credentials;
-pub mod enrollment;
 
 use crate::error::{ZitiError, ZitiResult};
 use config::Config;
@@ -16,7 +15,6 @@ use tokio::fs;
 
 pub use config::{Config as IdentityConfig, IdentityConfig as LegacyIdentityConfig};
 pub use credentials::Identity;
-pub use enrollment::EnrollmentManager;
 
 /// Primary Identity struct that encapsulates Config and Credentials
 ///
@@ -43,6 +41,11 @@ impl IdentityManager {
             credentials,
             identity,
         }
+    }
+
+    /// Load an IdentityManager from a JSON identity file
+    pub async fn load_from_file<P: AsRef<Path>>(path: P) -> ZitiResult<Self> {
+        load(path.as_ref()).await
     }
 
     /// Get the identity ID
@@ -87,7 +90,7 @@ impl IdentityManager {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::identity::load;
 /// use std::path::Path;
 ///

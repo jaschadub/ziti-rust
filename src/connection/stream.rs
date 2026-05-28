@@ -4,16 +4,13 @@
 
 use crate::error::ZitiResult;
 use crate::transport::WebSocketTransport;
+use futures_util::{Sink, Stream};
 use std::collections::VecDeque;
+use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::tungstenite::Message;
-
-/// Combined trait for async stream operations
-pub trait AsyncStream: AsyncRead + AsyncWrite + Send + Unpin {}
-
-impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
 /// Main stream type for Ziti connections
 ///
@@ -28,12 +25,12 @@ impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 ///
 /// ## Basic usage with AsyncRead/AsyncWrite
 ///
-/// ```rust
-/// use ziti_sdk::{Context, ZitiResult};
+/// ```rust,no_run
+/// use ziti_sdk::Context;
 /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
 ///
 /// #[tokio::main]
-/// async fn main() -> ZitiResult<()> {
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let context = Context::from_file("identity.json").await?;
 ///     let mut stream = context.dial("echo-service").await?;
 ///
@@ -54,7 +51,7 @@ impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 ///
 /// ## Check stream status
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, ZitiResult};
 ///
 /// #[tokio::main]
@@ -76,8 +73,6 @@ pub struct ZitiStream {
     transport: WebSocketTransport,
     /// Buffer for incoming data that hasn't been read yet
     read_buffer: VecDeque<u8>,
-    /// Buffer for outgoing data that needs to be written
-    write_buffer: Vec<u8>,
     /// Flag indicating if the stream has been closed
     closed: bool,
 }
@@ -109,28 +104,8 @@ impl ZitiStream {
         Self {
             transport,
             read_buffer: VecDeque::new(),
-            write_buffer: Vec::new(),
             closed: false,
         }
-    }
-
-    /// Create a new ZitiStream (legacy constructor for compatibility)
-    ///
-    /// This method is deprecated and will be removed in future versions.
-    /// Use [`ZitiStream::from_transport`] instead.
-    ///
-    /// # Arguments
-    ///
-    /// * `_inner` - Legacy async stream (unused)
-    ///
-    /// # Panics
-    ///
-    /// This method will panic as it is not implemented. Use `from_transport()` instead.
-    #[deprecated(since = "0.1.0", note = "Use ZitiStream::from_transport() instead")]
-    pub fn new(_inner: Box<dyn AsyncStream>) -> Self {
-        // This is a placeholder for backward compatibility
-        // In practice, use from_transport()
-        todo!("Use ZitiStream::from_transport() instead")
     }
 
     /// Check if the stream is closed
@@ -144,7 +119,7 @@ impl ZitiStream {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
@@ -181,12 +156,12 @@ impl ZitiStream {
     ///
     /// # Examples
     ///
-    /// ```rust
-    /// use ziti_sdk::{Context, ZitiResult};
+    /// ```rust,no_run
+    /// use ziti_sdk::Context;
     /// use tokio::io::AsyncWriteExt;
     ///
     /// #[tokio::main]
-    /// async fn main() -> ZitiResult<()> {
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ///     let context = Context::from_file("identity.json").await?;
     ///     let mut stream = context.dial("my-service").await?;
     ///
@@ -209,130 +184,132 @@ impl ZitiStream {
         }
         Ok(())
     }
-
-    /// Process incoming messages from the transport
-    #[allow(dead_code)]
-    async fn process_incoming_messages(&mut self) -> ZitiResult<()> {
-        // Try to receive messages from the transport
-        while let Some(message) = self.transport.receive().await? {
-            match message {
-                Message::Binary(data) => {
-                    // Add binary data to read buffer
-                    self.read_buffer.extend(data);
-                }
-                Message::Close(_) => {
-                    self.closed = true;
-                    break;
-                }
-                Message::Ping(data) => {
-                    // Respond to ping with pong
-                    self.transport.send(Message::Pong(data)).await?;
-                }
-                Message::Pong(_) => {
-                    // Handle pong message (usually nothing to do)
-                }
-                Message::Text(_) => {
-                    // Text messages are not expected in Ziti protocol
-                    return Err(crate::error::ZitiError::ProtocolError {
-                        message: "Unexpected text message in Ziti stream".to_string(),
-                    });
-                }
-                Message::Frame(_) => {
-                    // Raw frames are handled by tungstenite
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Send any pending write data
-    #[allow(dead_code)]
-    async fn send_write_buffer(&mut self) -> Result<(), std::io::Error> {
-        if !self.write_buffer.is_empty() {
-            let data = std::mem::take(&mut self.write_buffer);
-            let message = Message::Binary(data.into());
-            
-            self.transport.send(message).await.map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("Transport send failed: {}", e))
-            })?;
-        }
-        Ok(())
-    }
 }
 
 impl AsyncRead for ZitiStream {
     fn poll_read(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        if self.closed {
-            return Poll::Ready(Ok(()));
-        }
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
 
-        // First, check if we have data in our buffer
-        let available = std::cmp::min(buf.remaining(), self.read_buffer.len());
-        if available > 0 {
-            let data: Vec<u8> = self.read_buffer.drain(..available).collect();
-            buf.put_slice(&data);
-            return Poll::Ready(Ok(()));
-        }
+        loop {
+            // Serve any buffered bytes first.
+            if !this.read_buffer.is_empty() {
+                let n = std::cmp::min(buf.remaining(), this.read_buffer.len());
+                if n > 0 {
+                    let data: Vec<u8> = this.read_buffer.drain(..n).collect();
+                    buf.put_slice(&data);
+                }
+                return Poll::Ready(Ok(()));
+            }
 
-        // If no data in buffer, we need to check for new messages
-        // For now, we'll return Pending and let the caller try again
-        // In a more complete implementation, we'd use a waker system
-        if self.closed {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
+            // EOF once the connection is closed and the buffer is drained.
+            if this.closed {
+                return Poll::Ready(Ok(()));
+            }
+
+            // Otherwise pull the next WebSocket message from the transport.
+            match Pin::new(this.transport.stream_mut()).poll_next(cx) {
+                Poll::Ready(Some(Ok(message))) => match message {
+                    Message::Binary(data) => {
+                        this.read_buffer.extend(data);
+                        // Loop back to serve the freshly buffered bytes.
+                    }
+                    Message::Close(_) => {
+                        this.closed = true;
+                        return Poll::Ready(Ok(()));
+                    }
+                    // Tungstenite handles ping/pong and raw frames internally;
+                    // keep polling for application data.
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+                    Message::Text(_) => {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unexpected text message in Ziti stream",
+                        )));
+                    }
+                },
+                Poll::Ready(Some(Err(e))) => {
+                    return Poll::Ready(Err(io::Error::other(format!(
+                        "WebSocket receive failed: {}",
+                        e
+                    ))));
+                }
+                Poll::Ready(None) => {
+                    this.closed = true;
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 }
 
 impl AsyncWrite for ZitiStream {
     fn poll_write(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        if self.closed {
-            return Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "Stream is closed",
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+
+        if this.closed {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "stream is closed",
             )));
         }
 
-        // Add data to write buffer
-        self.write_buffer.extend_from_slice(buf);
-        Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        if self.closed {
-            return Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "Stream is closed",
-            )));
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
         }
 
-        // For now, we'll use a simple approach that may not be fully async
-        // In a more complete implementation, we'd properly handle the async send
-        if !self.write_buffer.is_empty() {
-            // We can't easily make this async in poll context, so we'll return Pending
-            // and let the runtime handle it. In practice, a more sophisticated
-            // implementation would use internal state management.
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(()))
+        // Wait for the sink to accept a new message, then enqueue the bytes as a
+        // single binary frame. Actual transmission happens on poll_flush.
+        match Pin::new(this.transport.stream_mut()).poll_ready(cx) {
+            Poll::Ready(Ok(())) => {
+                Pin::new(this.transport.stream_mut())
+                    .start_send(Message::Binary(buf.to_vec().into()))
+                    .map_err(|e| io::Error::other(format!("WebSocket send failed: {}", e)))?;
+                Poll::Ready(Ok(buf.len()))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(format!(
+                "WebSocket sink error: {}",
+                e
+            )))),
+            Poll::Pending => Poll::Pending,
         }
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        self.closed = true;
-        Poll::Ready(Ok(()))
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+
+        match Pin::new(this.transport.stream_mut()).poll_flush(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(format!(
+                "WebSocket flush failed: {}",
+                e
+            )))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+
+        match Pin::new(this.transport.stream_mut()).poll_close(cx) {
+            Poll::Ready(Ok(())) => {
+                this.closed = true;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(format!(
+                "WebSocket close failed: {}",
+                e
+            )))),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 

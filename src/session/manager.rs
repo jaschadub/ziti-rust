@@ -3,10 +3,23 @@
 //! Manages API and network sessions with automatic renewal.
 
 use super::{api_session, ApiSession, NetworkSession};
-use crate::error::ZitiResult;
+use crate::error::{ZitiError, ZitiResult};
 use crate::identity::IdentityManager;
+use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+
+/// Response structure for the create-session API call
+#[derive(Debug, Deserialize)]
+struct CreateSessionResponse {
+    data: SessionData,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionData {
+    id: String,
+}
 
 /// Session manager for handling session lifecycle
 #[derive(Clone)]
@@ -35,7 +48,7 @@ impl SessionManager {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::session::SessionManager;
     /// use ziti_sdk::identity::load_from_file;
     ///
@@ -52,10 +65,10 @@ impl SessionManager {
         // Check if we have a current valid session
         {
             let session_guard = self.current_api_session.read().await;
-            if let Some(ref session) = *session_guard {
-                if !session.is_expired() {
-                    return Ok(session.clone());
-                }
+            if let Some(ref session) = *session_guard
+                && !session.is_expired()
+            {
+                return Ok(session.clone());
             }
         }
 
@@ -83,17 +96,61 @@ impl SessionManager {
     /// # Returns
     ///
     /// * `ZitiResult<NetworkSession>` - A network session for the service
-    ///
-    /// # Note
-    ///
-    /// This is a placeholder implementation. The actual network session
-    /// functionality will be implemented in a future task.
-    pub async fn get_network_session(&self, _service_id: &str) -> ZitiResult<NetworkSession> {
-        // For now, ensure we have a valid API session
-        let _api_session = self.get_api_session().await?;
+    pub async fn get_network_session(&self, service_id: &str) -> ZitiResult<NetworkSession> {
+        // Ensure we have a valid API session to authorize the request.
+        let api_session = self.get_api_session().await?;
 
-        // TODO: Implement network session creation using the API session
-        todo!("Network session implementation will be added in a future task")
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| {
+                ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e))
+            })?;
+
+        let sessions_url = format!(
+            "{}/sessions",
+            self.identity_manager.zt_api().trim_end_matches('/')
+        );
+
+        let request_body = serde_json::json!({
+            "serviceId": service_id,
+            "type": "Dial",
+        });
+
+        let response = client
+            .post(&sessions_url)
+            .header("Content-Type", "application/json")
+            .header("zt-session", &api_session.token)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| {
+                ZitiError::ConnectionFailed(format!("Failed to create network session: {}", e))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(ZitiError::ProtocolError {
+                message: format!(
+                    "Network session request failed with status {}: {}",
+                    status, error_text
+                ),
+            });
+        }
+
+        let session_response: CreateSessionResponse =
+            response.json().await.map_err(|e| ZitiError::ProtocolError {
+                message: format!("Failed to parse network session response: {}", e),
+            })?;
+
+        Ok(NetworkSession::new(
+            session_response.data.id,
+            service_id.to_string(),
+        ))
     }
 
     /// Clear the current API session
@@ -125,25 +182,8 @@ impl SessionManager {
     }
 }
 
-impl Default for SessionManager {
-    fn default() -> Self {
-        // Note: This will not be very useful since we need an IdentityManager
-        // This is mainly here to satisfy trait bounds if needed
-        panic!("SessionManager requires an IdentityManager and cannot be created with default()")
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_session_manager_default_panic() {
-        // Test that default() properly panics
-        let result = std::panic::catch_unwind(SessionManager::default);
-        assert!(result.is_err());
-    }
-
-    // Note: More comprehensive tests would require proper identity setup
-    // which is beyond the scope of this initial implementation
+    // Note: comprehensive tests require a controller and proper identity setup,
+    // which is exercised by the integration tests rather than here.
 }
