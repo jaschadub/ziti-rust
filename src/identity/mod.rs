@@ -5,7 +5,6 @@
 
 pub mod config;
 pub mod credentials;
-pub mod enrollment;
 
 use crate::error::{ZitiError, ZitiResult};
 use config::Config;
@@ -16,7 +15,6 @@ use tokio::fs;
 
 pub use config::{Config as IdentityConfig, IdentityConfig as LegacyIdentityConfig};
 pub use credentials::Identity;
-pub use enrollment::EnrollmentManager;
 
 /// Primary Identity struct that encapsulates Config and Credentials
 ///
