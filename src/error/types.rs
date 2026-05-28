@@ -26,7 +26,7 @@ pub type ZitiResult<T> = Result<T, ZitiError>;
 ///
 /// ## Basic error handling
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, ZitiError, ZitiResult};
 ///
 /// #[tokio::main]

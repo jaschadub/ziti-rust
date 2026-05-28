@@ -28,12 +28,12 @@ impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 ///
 /// ## Basic usage with AsyncRead/AsyncWrite
 ///
-/// ```rust
-/// use ziti_sdk::{Context, ZitiResult};
+/// ```rust,no_run
+/// use ziti_sdk::Context;
 /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
 ///
 /// #[tokio::main]
-/// async fn main() -> ZitiResult<()> {
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let context = Context::from_file("identity.json").await?;
 ///     let mut stream = context.dial("echo-service").await?;
 ///
@@ -54,7 +54,7 @@ impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 ///
 /// ## Check stream status
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, ZitiResult};
 ///
 /// #[tokio::main]
@@ -144,7 +144,7 @@ impl ZitiStream {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
@@ -181,12 +181,12 @@ impl ZitiStream {
     ///
     /// # Examples
     ///
-    /// ```rust
-    /// use ziti_sdk::{Context, ZitiResult};
+    /// ```rust,no_run
+    /// use ziti_sdk::Context;
     /// use tokio::io::AsyncWriteExt;
     ///
     /// #[tokio::main]
-    /// async fn main() -> ZitiResult<()> {
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ///     let context = Context::from_file("identity.json").await?;
     ///     let mut stream = context.dial("my-service").await?;
     ///
@@ -253,7 +253,7 @@ impl ZitiStream {
             let message = Message::Binary(data.into());
             
             self.transport.send(message).await.map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("Transport send failed: {}", e))
+                std::io::Error::other(format!("Transport send failed: {}", e))
             })?;
         }
         Ok(())

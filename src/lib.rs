@@ -32,3 +32,5 @@ pub use config::{DialOptions, ListenOptions, ZitiConfig};
 pub use connection::{dial, listen, listen_with_options, ZitiListener, ZitiStream, EdgeRouter};
 pub use context::{Context, ContextBuilder};
 pub use error::{ZitiError, ZitiResult};
+pub use identity::IdentityManager;
+pub use session::SessionManager;

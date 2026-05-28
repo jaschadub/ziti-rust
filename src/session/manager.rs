@@ -35,7 +35,7 @@ impl SessionManager {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::session::SessionManager;
     /// use ziti_sdk::identity::load_from_file;
     ///
@@ -52,10 +52,10 @@ impl SessionManager {
         // Check if we have a current valid session
         {
             let session_guard = self.current_api_session.read().await;
-            if let Some(ref session) = *session_guard {
-                if !session.is_expired() {
-                    return Ok(session.clone());
-                }
+            if let Some(ref session) = *session_guard
+                && !session.is_expired()
+            {
+                return Ok(session.clone());
             }
         }
 

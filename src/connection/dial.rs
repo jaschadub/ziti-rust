@@ -30,7 +30,7 @@ use url::Url;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, connection::dial};
 ///
 /// #[tokio::main]
@@ -218,10 +218,10 @@ fn validate_hello_response(data: &[u8]) -> ZitiResult<()> {
     })?;
     
     // Check if response indicates success
-    if let Some(status) = response.get("status") {
-        if status == "ok" || status == "success" {
-            return Ok(());
-        }
+    if let Some(status) = response.get("status")
+        && (status == "ok" || status == "success")
+    {
+        return Ok(());
     }
     
     // If we get here, the handshake failed

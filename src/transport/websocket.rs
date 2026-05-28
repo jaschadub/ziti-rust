@@ -40,7 +40,7 @@ impl WebSocketTransport {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::transport::{WebSocketTransport, TlsConfig};
     /// use url::Url;
     ///

@@ -24,7 +24,7 @@ use url::Url;
 ///
 /// ## Creating a Context from an identity file
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, ZitiResult};
 ///
 /// #[tokio::main]
@@ -37,12 +37,12 @@ use url::Url;
 ///
 /// ## Using the Context to dial a service
 ///
-/// ```rust
-/// use ziti_sdk::{Context, ZitiResult};
+/// ```rust,no_run
+/// use ziti_sdk::Context;
 /// use tokio::io::AsyncWriteExt;
 ///
 /// #[tokio::main]
-/// async fn main() -> ZitiResult<()> {
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let context = Context::from_file("identity.json").await?;
 ///     let mut stream = context.dial("my-service").await?;
 ///     stream.write_all(b"Hello Ziti!").await?;
@@ -134,7 +134,7 @@ impl Context {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
@@ -181,12 +181,12 @@ impl Context {
     ///
     /// # Examples
     ///
-    /// ```rust
-    /// use ziti_sdk::{Context, ZitiResult};
+    /// ```rust,no_run
+    /// use ziti_sdk::Context;
     /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
     ///
     /// #[tokio::main]
-    /// async fn main() -> ZitiResult<()> {
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ///     let context = Context::from_file("identity.json").await?;
     ///     let mut stream = context.dial("echo-service").await?;
     ///
@@ -264,7 +264,7 @@ impl Context {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
     ///
@@ -308,7 +308,7 @@ impl Context {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult, ListenOptions};
     ///
     /// #[tokio::main]
@@ -346,7 +346,7 @@ impl Context {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
@@ -372,7 +372,7 @@ impl Context {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
@@ -558,10 +558,10 @@ fn validate_hello_response(data: &[u8]) -> ZitiResult<()> {
     })?;
     
     // Check if response indicates success
-    if let Some(status) = response.get("status") {
-        if status == "ok" || status == "success" {
-            return Ok(());
-        }
+    if let Some(status) = response.get("status")
+        && (status == "ok" || status == "success")
+    {
+        return Ok(());
     }
     
     // If we get here, the handshake failed

@@ -45,6 +45,11 @@ impl IdentityManager {
         }
     }
 
+    /// Load an IdentityManager from a JSON identity file
+    pub async fn load_from_file<P: AsRef<Path>>(path: P) -> ZitiResult<Self> {
+        load(path.as_ref()).await
+    }
+
     /// Get the identity ID
     pub fn id(&self) -> &str {
         &self.config.id
@@ -87,7 +92,7 @@ impl IdentityManager {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::identity::load;
 /// use std::path::Path;
 ///

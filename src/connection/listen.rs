@@ -31,7 +31,7 @@ use url::Url;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, connection::listen};
 ///
 /// #[tokio::main]
@@ -71,7 +71,7 @@ pub async fn listen(service_name: &str, context: &Context) -> ZitiResult<ZitiLis
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, connection::listen_with_options, ListenOptions};
 ///
 /// #[tokio::main]
@@ -167,7 +167,7 @@ pub async fn listen_with_options(
 ///
 /// ## Basic echo server
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, ZitiResult};
 /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
 ///
@@ -203,7 +203,7 @@ pub async fn listen_with_options(
 ///
 /// ## Server with connection handling
 ///
-/// ```rust
+/// ```rust,no_run
 /// use ziti_sdk::{Context, ZitiResult};
 ///
 /// #[tokio::main]
@@ -268,7 +268,7 @@ impl ZitiListener {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
     ///
@@ -322,7 +322,7 @@ impl ZitiListener {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
@@ -352,7 +352,7 @@ impl ZitiListener {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ziti_sdk::{Context, ZitiResult};
     ///
     /// #[tokio::main]
