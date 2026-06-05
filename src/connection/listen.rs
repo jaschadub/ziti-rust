@@ -2,14 +2,20 @@
 //!
 //! Provides listener functionality for accepting incoming Ziti connections.
 
+use super::stream::OutboundFrame;
 use super::ZitiStream;
 use crate::config::ListenOptions;
 use crate::context::Context;
 use crate::error::{ZitiError, ZitiResult};
 use crate::service::list_services;
+use crate::transport::protocol::{ContentType, ZitiMessage};
 use crate::transport::{TlsConfig, WebSocketTransport};
+use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
@@ -131,18 +137,18 @@ pub async fn listen_with_options(
     // for this terminator to us.
     perform_listen_handshake(&mut transport, &service.id, &terminator_id).await?;
 
-    // Step 7: Create and return ZitiListener
-    let (sender, receiver) = mpsc::unbounded_channel();
-    
+    // Step 7: Hand the bound WS to a demux task and return the listener.
+    let (accept_tx, accept_rx) = mpsc::unbounded_channel();
+    let demux_task = tokio::spawn(run_demux(transport, accept_tx));
+
     let listener = ZitiListener {
         service_name: service_name.to_string(),
         service_id: service.id.clone(),
         terminator_id,
         edge_router: edge_router.clone(),
         context: Arc::new(context.clone()),
-        transport: Some(transport),
-        connection_receiver: receiver,
-        _connection_sender: sender,
+        accept_rx,
+        demux_task: Some(demux_task),
     };
 
     Ok(listener)
@@ -241,12 +247,8 @@ pub struct ZitiListener {
     #[allow(dead_code)]
     edge_router: EdgeRouter,
     context: Arc<Context>,
-    // Held to keep the edge-router connection (and thus the terminator) alive
-    // for the lifetime of the listener.
-    #[allow(dead_code)]
-    transport: Option<WebSocketTransport>,
-    connection_receiver: mpsc::UnboundedReceiver<ZitiStream>,
-    _connection_sender: mpsc::UnboundedSender<ZitiStream>,
+    accept_rx: mpsc::UnboundedReceiver<ZitiStream>,
+    demux_task: Option<JoinHandle<()>>,
 }
 
 impl ZitiListener {
@@ -305,13 +307,11 @@ impl ZitiListener {
     /// }
     /// ```
     pub async fn accept(&mut self) -> ZitiResult<ZitiStream> {
-        // Wait for incoming connection from the receiver
-        self.connection_receiver
-            .recv()
-            .await
-            .ok_or_else(|| ZitiError::ConnectionFailed(
-                "Listener connection channel closed".to_string()
-            ))
+        self.accept_rx.recv().await.ok_or_else(|| {
+            ZitiError::ConnectionFailed(
+                "Listener accept channel closed (demux task exited)".to_string(),
+            )
+        })
     }
 
     /// Get the service name this listener is bound to
@@ -376,6 +376,12 @@ impl ZitiListener {
 
 impl Drop for ZitiListener {
     fn drop(&mut self) {
+        // Stop the demux task so the WS closes and any in-flight accept()s
+        // observe the channel close.
+        if let Some(handle) = self.demux_task.take() {
+            handle.abort();
+        }
+
         if self.terminator_id.is_empty() {
             return;
         }
@@ -565,7 +571,8 @@ async fn create_terminator(
     Ok(terminator_response.data.id)
 }
 
-/// Perform the listen (bind) handshake with the edge router.
+/// Perform the listen (bind) handshake with the edge router using the
+/// binary [`ZitiMessage`] framing.
 ///
 /// Announces to the edge router that this connection hosts the given service via
 /// the created terminator, so inbound connections are routed here.
@@ -574,20 +581,21 @@ async fn perform_listen_handshake(
     service_id: &str,
     terminator_id: &str,
 ) -> ZitiResult<()> {
-    let bind_msg = serde_json::to_vec(&serde_json::json!({
-        "type": "Bind",
-        "service_id": service_id,
-        "terminator_id": terminator_id,
-        "version": "1.0",
-    }))
-    .map_err(|e| ZitiError::ProtocolError {
-        message: format!("Failed to serialize Bind message: {}", e),
-    })?;
+    let mut bind = ZitiMessage::new(ContentType::Bind, 1, Bytes::new());
+    bind.header
+        .add_header("service_id".to_string(), service_id.to_string());
+    bind.header
+        .add_header("terminator_id".to_string(), terminator_id.to_string());
+    bind.header
+        .add_header("version".to_string(), "1.0".to_string());
 
-    transport.send(Message::Binary(bind_msg.into())).await?;
+    transport.send(Message::Binary(bind.serialize()?)).await?;
 
     match transport.receive().await? {
-        Some(Message::Binary(data)) => validate_bind_response(&data),
+        Some(Message::Binary(data)) => check_response_status(
+            ZitiMessage::deserialize(Bytes::copy_from_slice(&data))?,
+            "bind",
+        ),
         Some(_) => Err(ZitiError::ProtocolError {
             message: "Unexpected message type in bind handshake response".to_string(),
         }),
@@ -597,22 +605,163 @@ async fn perform_listen_handshake(
     }
 }
 
-/// Validate the bind handshake response from the edge router.
-fn validate_bind_response(data: &[u8]) -> ZitiResult<()> {
-    let response: serde_json::Value =
-        serde_json::from_slice(data).map_err(|e| ZitiError::ProtocolError {
-            message: format!("Failed to parse bind response: {}", e),
-        })?;
+/// Read the `status`/`error` headers from a handshake response.
+pub(crate) fn check_response_status(msg: ZitiMessage, op: &str) -> ZitiResult<()> {
+    match msg.header.get_header("status").map(String::as_str) {
+        Some("ok") | Some("success") => Ok(()),
+        Some(other) => {
+            let detail = msg
+                .header
+                .get_header("error")
+                .cloned()
+                .unwrap_or_default();
+            Err(ZitiError::ProtocolError {
+                message: format!("{} handshake failed: status={} error={}", op, other, detail),
+            })
+        }
+        None => Err(ZitiError::ProtocolError {
+            message: format!("{} handshake response missing status header", op),
+        }),
+    }
+}
 
-    if let Some(status) = response.get("status")
-        && (status == "ok" || status == "success")
-    {
-        return Ok(());
+/// What the demuxer should do with an inbound frame from the edge router.
+#[derive(Debug)]
+pub(crate) enum DemuxAction {
+    /// A new inbound connection request. The demuxer accepts it by
+    /// creating a stream and replying with `DialResponse(status=ok)`.
+    NewInbound { conn_id: u32 },
+    /// Payload bytes for an existing connection.
+    Data { conn_id: u32, payload: Bytes },
+    /// Peer closed a connection.
+    Close { conn_id: u32 },
+    /// Frame is well-formed but not actionable (ping, error, etc.).
+    Ignore,
+}
+
+/// Decide what to do with a single inbound `ZitiMessage`.
+pub(crate) fn classify_frame(msg: ZitiMessage) -> ZitiResult<DemuxAction> {
+    let conn_id = match msg.header.get_header("conn_id") {
+        Some(s) => s.parse::<u32>().map_err(|e| ZitiError::ProtocolError {
+            message: format!("Invalid conn_id header '{}': {}", s, e),
+        })?,
+        None => {
+            // Hello / Bind responses and pings have no conn_id.
+            return Ok(DemuxAction::Ignore);
+        }
+    };
+
+    match msg.content_type() {
+        ContentType::Dial => Ok(DemuxAction::NewInbound { conn_id }),
+        ContentType::Data => Ok(DemuxAction::Data {
+            conn_id,
+            payload: msg.payload.clone(),
+        }),
+        ContentType::Close => Ok(DemuxAction::Close { conn_id }),
+        _ => Ok(DemuxAction::Ignore),
+    }
+}
+
+/// Listener demux task: owns the bound WebSocket, fans inbound frames out
+/// to per-conn channels, and serializes outbound frames from every
+/// accepted [`ZitiStream`] back onto the same WebSocket.
+async fn run_demux(
+    mut transport: WebSocketTransport,
+    accept_tx: mpsc::UnboundedSender<ZitiStream>,
+) {
+    let mut conns: HashMap<u32, mpsc::UnboundedSender<Bytes>> = HashMap::new();
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutboundFrame>();
+    let mut accept_seq: u32 = 1;
+
+    loop {
+        tokio::select! {
+            // Outbound: a stream wants to send a Data or Close frame.
+            maybe_out = out_rx.recv() => {
+                let Some(frame) = maybe_out else { break };
+                if frame.is_close {
+                    conns.remove(&frame.conn_id);
+                }
+                if transport
+                    .stream_mut()
+                    .send(Message::Binary(frame.bytes))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            // Inbound: read the next frame from the edge router.
+            maybe_in = transport.stream_mut().next() => {
+                let Some(item) = maybe_in else { break };
+                let msg = match item {
+                    Ok(Message::Binary(data)) => {
+                        match ZitiMessage::deserialize(Bytes::copy_from_slice(&data)) {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        }
+                    }
+                    Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => continue,
+                    Ok(Message::Text(_)) => continue,
+                    Ok(Message::Close(_)) | Err(_) => break,
+                };
+
+                match classify_frame(msg) {
+                    Ok(DemuxAction::NewInbound { conn_id }) => {
+                        let (in_tx, in_rx) = mpsc::unbounded_channel();
+                        conns.insert(conn_id, in_tx);
+
+                        let stream = ZitiStream::from_channels(
+                            conn_id,
+                            in_rx,
+                            out_tx.clone(),
+                        );
+
+                        // Accept the dial back to the edge router before
+                        // surfacing the stream so the peer can start sending.
+                        let mut resp = ZitiMessage::new(
+                            ContentType::DialResponse,
+                            accept_seq,
+                            Bytes::new(),
+                        );
+                        accept_seq = accept_seq.wrapping_add(1).max(1);
+                        resp.header
+                            .add_header("conn_id".to_string(), conn_id.to_string());
+                        resp.header
+                            .add_header("status".to_string(), "ok".to_string());
+
+                        if let Ok(serialized) = resp.serialize()
+                            && transport
+                                .stream_mut()
+                                .send(Message::Binary(serialized))
+                                .await
+                                .is_err()
+                        {
+                            break;
+                        }
+
+                        if accept_tx.send(stream).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(DemuxAction::Data { conn_id, payload }) => {
+                        if let Some(tx) = conns.get(&conn_id)
+                            && tx.send(payload).is_err()
+                        {
+                            conns.remove(&conn_id);
+                        }
+                    }
+                    Ok(DemuxAction::Close { conn_id }) => {
+                        conns.remove(&conn_id);
+                    }
+                    Ok(DemuxAction::Ignore) | Err(_) => {}
+                }
+            }
+        }
     }
 
-    Err(ZitiError::ProtocolError {
-        message: format!("Bind handshake failed: {:?}", response),
-    })
+    // Closing the WS drops all per-conn senders, signaling EOF to every
+    // outstanding ZitiStream. Best-effort flush.
+    let _ = transport.close().await;
 }
 
 /// Delete a terminator from the controller (best-effort listener cleanup).
@@ -654,4 +803,83 @@ async fn delete_terminator(context: &Context, terminator_id: &str) -> ZitiResult
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(ct: ContentType, conn_id: Option<u32>, payload: &[u8]) -> ZitiMessage {
+        let mut msg = ZitiMessage::new(ct, 1, Bytes::copy_from_slice(payload));
+        if let Some(cid) = conn_id {
+            msg.header
+                .add_header("conn_id".to_string(), cid.to_string());
+        }
+        msg
+    }
+
+    #[test]
+    fn classify_dial_returns_new_inbound() {
+        let action = classify_frame(frame(ContentType::Dial, Some(7), &[])).unwrap();
+        assert!(matches!(action, DemuxAction::NewInbound { conn_id: 7 }));
+    }
+
+    #[test]
+    fn classify_data_routes_payload() {
+        let action = classify_frame(frame(ContentType::Data, Some(3), b"hi")).unwrap();
+        match action {
+            DemuxAction::Data { conn_id, payload } => {
+                assert_eq!(conn_id, 3);
+                assert_eq!(payload.as_ref(), b"hi");
+            }
+            other => panic!("expected Data, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn classify_close_returns_close() {
+        let action = classify_frame(frame(ContentType::Close, Some(11), &[])).unwrap();
+        assert!(matches!(action, DemuxAction::Close { conn_id: 11 }));
+    }
+
+    #[test]
+    fn classify_missing_conn_id_ignores() {
+        let action = classify_frame(frame(ContentType::Data, None, b"x")).unwrap();
+        assert!(matches!(action, DemuxAction::Ignore));
+    }
+
+    #[test]
+    fn classify_invalid_conn_id_errors() {
+        let mut msg = ZitiMessage::new(ContentType::Data, 1, Bytes::new());
+        msg.header
+            .add_header("conn_id".to_string(), "not-a-number".to_string());
+        assert!(classify_frame(msg).is_err());
+    }
+
+    #[test]
+    fn classify_unknown_content_type_ignores() {
+        let action = classify_frame(frame(ContentType::Ping, Some(1), &[])).unwrap();
+        assert!(matches!(action, DemuxAction::Ignore));
+    }
+
+    #[test]
+    fn check_response_status_ok() {
+        let mut msg = ZitiMessage::new(ContentType::Hello, 1, Bytes::new());
+        msg.header
+            .add_header("status".to_string(), "ok".to_string());
+        assert!(check_response_status(msg, "test").is_ok());
+    }
+
+    #[test]
+    fn check_response_status_carries_error_detail() {
+        let mut msg = ZitiMessage::new(ContentType::Hello, 1, Bytes::new());
+        msg.header
+            .add_header("status".to_string(), "error".to_string());
+        msg.header
+            .add_header("error".to_string(), "denied".to_string());
+        let err = check_response_status(msg, "bind").unwrap_err();
+        let s = format!("{}", err);
+        assert!(s.contains("denied"), "got: {}", s);
+        assert!(s.contains("bind"), "got: {}", s);
+    }
 }

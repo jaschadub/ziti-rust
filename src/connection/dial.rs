@@ -6,7 +6,9 @@ use crate::context::Context;
 use crate::connection::ZitiStream;
 use crate::error::{ZitiError, ZitiResult};
 use crate::service::list_services;
+use crate::transport::protocol::{ContentType, ZitiMessage};
 use crate::transport::{TlsConfig, WebSocketTransport};
+use bytes::Bytes;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
@@ -163,26 +165,16 @@ async fn get_service_terminators(service_id: &str, context: &Context) -> ZitiRes
     Ok(edge_routers)
 }
 
-/// Perform Ziti connection handshake
+/// Perform Ziti connection handshake using the binary [`ZitiMessage`] framing.
 async fn perform_ziti_handshake(
     transport: &mut WebSocketTransport,
     service_id: &str,
 ) -> ZitiResult<()> {
-    // Create Hello message for Ziti handshake
-    let hello_msg = create_hello_message(service_id)?;
-    
-    // Send Hello message
-    transport.send(Message::Binary(hello_msg.into())).await?;
-    
-    // Wait for response
-    let response = transport.receive().await?;
-    
-    match response {
-        Some(Message::Binary(data)) => {
-            // Parse and validate Hello response
-            validate_hello_response(&data)?;
-            Ok(())
-        }
+    let hello_bytes = build_hello_message(service_id)?;
+    transport.send(Message::Binary(hello_bytes)).await?;
+
+    match transport.receive().await? {
+        Some(Message::Binary(data)) => parse_hello_response(&data),
         Some(_) => Err(ZitiError::ProtocolError {
             message: "Unexpected message type in handshake response".to_string(),
         }),
@@ -192,45 +184,28 @@ async fn perform_ziti_handshake(
     }
 }
 
-/// Create a Hello message for Ziti protocol handshake
-fn create_hello_message(service_id: &str) -> ZitiResult<Vec<u8>> {
-    // This is a simplified Hello message. In practice, this would be more complex
-    // and follow the actual Ziti protocol specification
-    use serde_json::json;
-    
-    let hello = json!({
-        "type": "Hello",
-        "service_id": service_id,
-        "version": "1.0"
-    });
-    
-    serde_json::to_vec(&hello).map_err(|e| {
-        ZitiError::ProtocolError {
-            message: format!("Failed to serialize Hello message: {}", e),
-        }
-    })
+/// Build a `Hello` [`ZitiMessage`] for the dial handshake.
+fn build_hello_message(service_id: &str) -> ZitiResult<Bytes> {
+    let mut hello = ZitiMessage::new(ContentType::Hello, 1, Bytes::new());
+    hello.header
+        .add_header("service_id".to_string(), service_id.to_string());
+    hello.header
+        .add_header("version".to_string(), "1.0".to_string());
+    hello.serialize()
 }
 
-/// Validate Hello response from edge router
-fn validate_hello_response(data: &[u8]) -> ZitiResult<()> {
-    // Parse response as JSON
-    let response: serde_json::Value = serde_json::from_slice(data).map_err(|e| {
-        ZitiError::ProtocolError {
-            message: format!("Failed to parse Hello response: {}", e),
-        }
-    })?;
-    
-    // Check if response indicates success
-    if let Some(status) = response.get("status")
-        && (status == "ok" || status == "success")
-    {
-        return Ok(());
+/// Parse and validate a `Hello` handshake response from the edge router.
+fn parse_hello_response(data: &[u8]) -> ZitiResult<()> {
+    let msg = ZitiMessage::deserialize(Bytes::copy_from_slice(data))?;
+    if msg.content_type() != ContentType::Hello {
+        return Err(ZitiError::ProtocolError {
+            message: format!(
+                "Expected Hello response, got content_type={:?}",
+                msg.content_type()
+            ),
+        });
     }
-    
-    // If we get here, the handshake failed
-    Err(ZitiError::ProtocolError {
-        message: format!("Hello handshake failed: {:?}", response),
-    })
+    crate::connection::listen::check_response_status(msg, "hello")
 }
 
 #[cfg(test)]
@@ -244,7 +219,7 @@ mod tests {
             "port": 443,
             "supported_protocols": ["tls", "ws"]
         }"#;
-        
+
         let edge_router: EdgeRouter = serde_json::from_str(json).unwrap();
         assert_eq!(edge_router.hostname, "edge-router.example.com");
         assert_eq!(edge_router.port, 443);
@@ -252,12 +227,40 @@ mod tests {
     }
 
     #[test]
-    fn test_hello_message_creation() {
-        let message = create_hello_message("test-service").unwrap();
-        let parsed: serde_json::Value = serde_json::from_slice(&message).unwrap();
-        
-        assert_eq!(parsed["type"], "Hello");
-        assert_eq!(parsed["service_id"], "test-service");
-        assert_eq!(parsed["version"], "1.0");
+    fn test_hello_message_roundtrip() {
+        let bytes = build_hello_message("test-service").unwrap();
+        let parsed = ZitiMessage::deserialize(bytes).unwrap();
+        assert_eq!(parsed.content_type(), ContentType::Hello);
+        assert_eq!(parsed.header.get_header("service_id").unwrap(), "test-service");
+        assert_eq!(parsed.header.get_header("version").unwrap(), "1.0");
+    }
+
+    #[test]
+    fn test_parse_hello_response_ok() {
+        let mut msg = ZitiMessage::new(ContentType::Hello, 2, Bytes::new());
+        msg.header
+            .add_header("status".to_string(), "ok".to_string());
+        let bytes = msg.serialize().unwrap();
+        assert!(parse_hello_response(&bytes).is_ok());
+    }
+
+    #[test]
+    fn test_parse_hello_response_error_carries_detail() {
+        let mut msg = ZitiMessage::new(ContentType::Hello, 2, Bytes::new());
+        msg.header
+            .add_header("status".to_string(), "error".to_string());
+        msg.header
+            .add_header("error".to_string(), "policy denied".to_string());
+        let bytes = msg.serialize().unwrap();
+        let err = parse_hello_response(&bytes).unwrap_err();
+        let s = format!("{}", err);
+        assert!(s.contains("policy denied"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_parse_hello_response_wrong_type() {
+        let msg = ZitiMessage::new(ContentType::Data, 1, Bytes::from_static(b"x"));
+        let bytes = msg.serialize().unwrap();
+        assert!(parse_hello_response(&bytes).is_err());
     }
 }
