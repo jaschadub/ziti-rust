@@ -27,6 +27,12 @@ pub enum ContentType {
     Pong = 6,
     /// Error message
     Error = 7,
+    /// Listener bind handshake (host -> edge router)
+    Bind = 8,
+    /// Inbound dial notification (edge router -> host)
+    Dial = 9,
+    /// Response to an inbound dial (host -> edge router)
+    DialResponse = 10,
     /// Custom message type
     Custom(u16),
 }
@@ -42,6 +48,9 @@ impl From<u16> for ContentType {
             5 => ContentType::Ping,
             6 => ContentType::Pong,
             7 => ContentType::Error,
+            8 => ContentType::Bind,
+            9 => ContentType::Dial,
+            10 => ContentType::DialResponse,
             other => ContentType::Custom(other),
         }
     }
@@ -58,6 +67,9 @@ impl From<ContentType> for u16 {
             ContentType::Ping => 5,
             ContentType::Pong => 6,
             ContentType::Error => 7,
+            ContentType::Bind => 8,
+            ContentType::Dial => 9,
+            ContentType::DialResponse => 10,
             ContentType::Custom(value) => value,
         }
     }
