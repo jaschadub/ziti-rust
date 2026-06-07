@@ -20,8 +20,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo build
         run: cargo build --all-targets
-      - name: cargo test (lib + doctests)
-        run: cargo test --lib --doc
+      - name: cargo test (lib)
+        run: cargo test --lib
+      - name: cargo test (doctests)
+        run: cargo test --doc
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
@@ -34,6 +36,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve advertised hostnames to the runner's loopback
+        run: |
+          # The controller advertises the controller as `ziti-controller`
+          # and the router as `ziti-router`. Edge router URLs the SDK
+          # gets from the controller therefore look like
+          # https://ziti-router:3022, which we want to resolve to the
+          # published port on this runner.
+          echo '127.0.0.1 ziti-controller ziti-router' | sudo tee -a /etc/hosts
 
       - name: Start Ziti network
         working-directory: tests/docker

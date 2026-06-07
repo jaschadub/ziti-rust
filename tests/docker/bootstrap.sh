@@ -16,7 +16,11 @@
 set -euo pipefail
 
 CONTAINER=ziti-quickstart
-CTRL_URL=${CTRL_URL:-https://localhost:1280}
+# Inside the container the controller is reachable as ziti-controller
+# (a network alias on the quickstart bridge). The runner host reaches
+# it via the published 1280 port on localhost — the CI workflow adds a
+# /etc/hosts entry so `ziti-controller` resolves to 127.0.0.1 there.
+CTRL_URL=${CTRL_URL:-https://ziti-controller:1280}
 OUT_DIR=${OUT_DIR:-"$(cd "$(dirname "$0")" && pwd)"}
 IDENTITY_NAME=${IDENTITY_NAME:-test-user}
 DIAL_SERVICE=${DIAL_SERVICE:-echo-service}
