@@ -82,15 +82,20 @@ struct AuthData {
 pub async fn authenticate(identity_manager: &IdentityManager) -> ZitiResult<ApiSession> {
     let client = controller_client(identity_manager, Duration::from_secs(30)).await?;
 
+    // The Ziti edge /authenticate endpoint requires the auth method as
+    // a query parameter. `cert` tells the controller to authenticate
+    // via the mTLS client certificate presented by the SDK.
     let auth_url = format!(
-        "{}/authenticate",
+        "{}/authenticate?method=cert",
         identity_manager.zt_api().trim_end_matches('/')
     );
 
-    // Send authentication request
+    // Send authentication request. An empty JSON object body keeps
+    // the controller happy when it parses Content-Type: application/json.
     let response = client
         .post(&auth_url)
         .header("Content-Type", "application/json")
+        .body("{}")
         .send()
         .await
         .map_err(|e| ZitiError::AuthenticationFailed {
