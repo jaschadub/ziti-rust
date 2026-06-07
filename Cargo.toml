@@ -1,6 +1,6 @@
 [package]
 name = "ziti-sdk"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Jascha Wanger <jascha@thirdkey.ai>"]
 description = "Ziti Rust SDK - High-performance, async-first implementation for secure, zero-trust networking"
