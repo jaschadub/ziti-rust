@@ -5,8 +5,9 @@
 
 use crate::error::{ZitiError, ZitiResult};
 use crate::session::SessionManager;
-use reqwest::Client;
+use crate::transport::http::controller_client;
 use serde::Deserialize;
+use std::time::Duration;
 
 /// Represents a Ziti service returned from the controller
 #[derive(Debug, Clone, Deserialize)]
@@ -72,14 +73,10 @@ struct ServicesResponse {
 /// }
 /// ```
 pub async fn list_services(session_manager: &SessionManager) -> ZitiResult<Vec<Service>> {
-    // Get a valid API session
     let api_session = session_manager.get_api_session().await?;
-
-    // Create HTTP client with CA trust configuration
-    let client = create_service_client(session_manager)?;
-
-    // Build services endpoint URL
     let identity_manager = session_manager.identity_manager();
+    let client = controller_client(identity_manager, Duration::from_secs(30)).await?;
+
     let services_url = format!(
         "{}/services",
         identity_manager.zt_api().trim_end_matches('/')
@@ -121,106 +118,6 @@ pub async fn list_services(session_manager: &SessionManager) -> ZitiResult<Vec<S
             })?;
 
     Ok(services_response.data)
-}
-
-/// Create an HTTP client configured to trust the controller's CA certificate
-fn create_service_client(session_manager: &SessionManager) -> ZitiResult<Client> {
-    let identity_manager = session_manager.identity_manager();
-    let identity = identity_manager.identity();
-
-    // Convert rustls certificate chain to PEM format for reqwest
-    let cert_pem = serialize_cert_chain(&identity.certificate_chain)?;
-    let key_pem = serialize_private_key(&identity.private_key)?;
-
-    // Combine cert and key into single PEM buffer
-    let mut pem_buffer = cert_pem;
-    pem_buffer.extend_from_slice(&key_pem);
-
-    // Create TLS identity for reqwest
-    let tls_identity = reqwest::Identity::from_pem(&pem_buffer)
-        .map_err(|e| ZitiError::ConfigError(format!("Failed to create TLS identity: {}", e)))?;
-
-    // Create reqwest client with TLS configuration and CA trust
-    let client = Client::builder()
-        .identity(tls_identity)
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
-
-    Ok(client)
-}
-
-/// Serialize certificate chain to PEM format for reqwest
-fn serialize_cert_chain(cert_chain: &[rustls::pki_types::CertificateDer]) -> ZitiResult<Vec<u8>> {
-    let mut pem_data = Vec::new();
-
-    for cert in cert_chain {
-        pem_data.extend_from_slice(b"-----BEGIN CERTIFICATE-----\n");
-        let cert_b64 = base64_encode(cert.as_ref());
-        for chunk in cert_b64.as_bytes().chunks(64) {
-            pem_data.extend_from_slice(chunk);
-            pem_data.push(b'\n');
-        }
-        pem_data.extend_from_slice(b"-----END CERTIFICATE-----\n");
-    }
-
-    Ok(pem_data)
-}
-
-/// Serialize private key to PEM format for reqwest
-fn serialize_private_key(private_key: &rustls::pki_types::PrivateKeyDer) -> ZitiResult<Vec<u8>> {
-    use rustls::pki_types::PrivateKeyDer;
-
-    // The PEM label must match the key's DER encoding, otherwise reqwest
-    // cannot parse the identity.
-    let label = match private_key {
-        PrivateKeyDer::Pkcs1(_) => "RSA PRIVATE KEY",
-        PrivateKeyDer::Sec1(_) => "EC PRIVATE KEY",
-        _ => "PRIVATE KEY",
-    };
-
-    let mut pem_data = Vec::new();
-
-    pem_data.extend_from_slice(format!("-----BEGIN {}-----\n", label).as_bytes());
-    let key_b64 = base64_encode(private_key.secret_der());
-    for chunk in key_b64.as_bytes().chunks(64) {
-        pem_data.extend_from_slice(chunk);
-        pem_data.push(b'\n');
-    }
-    pem_data.extend_from_slice(format!("-----END {}-----\n", label).as_bytes());
-
-    Ok(pem_data)
-}
-
-/// Simple base64 encoder implementation
-fn base64_encode(input: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut result = String::new();
-    let mut i = 0;
-    while i < input.len() {
-        let b1 = input[i];
-        let b2 = if i + 1 < input.len() { input[i + 1] } else { 0 };
-        let b3 = if i + 2 < input.len() { input[i + 2] } else { 0 };
-
-        let bitmap = ((b1 as u32) << 16) | ((b2 as u32) << 8) | (b3 as u32);
-
-        result.push(CHARS[((bitmap >> 18) & 63) as usize] as char);
-        result.push(CHARS[((bitmap >> 12) & 63) as usize] as char);
-        result.push(if i + 1 < input.len() {
-            CHARS[((bitmap >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        result.push(if i + 2 < input.len() {
-            CHARS[(bitmap & 63) as usize] as char
-        } else {
-            '='
-        });
-
-        i += 3;
-    }
-    result
 }
 
 /// Service discovery manager
@@ -345,51 +242,6 @@ mod tests {
         assert_eq!(services_response.data[0].id, "service-1");
         assert_eq!(services_response.data[1].id, "service-2");
         assert!(services_response.data[1].encryption_required);
-    }
-
-    #[test]
-    fn test_base64_encode_service_discovery() {
-        // Test the base64 encoder used in service discovery
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-    }
-
-    #[test]
-    fn test_serialize_cert_chain_service() {
-        let cert_data = b"test certificate data for service";
-        let cert = rustls::pki_types::CertificateDer::from(cert_data.to_vec());
-        let cert_chain = vec![cert];
-
-        let result = serialize_cert_chain(&cert_chain);
-        assert!(result.is_ok());
-
-        let pem_data = result.unwrap();
-        let pem_string = String::from_utf8(pem_data).unwrap();
-        assert!(pem_string.contains("-----BEGIN CERTIFICATE-----"));
-        assert!(pem_string.contains("-----END CERTIFICATE-----"));
-        assert!(pem_string.contains(&base64_encode(cert_data)));
-    }
-
-    #[test]
-    fn test_serialize_private_key_service() {
-        let key_data = b"test private key data for service";
-        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
-            rustls::pki_types::PrivatePkcs8KeyDer::from(key_data.to_vec()),
-        );
-
-        let result = serialize_private_key(&private_key);
-        assert!(result.is_ok());
-
-        let pem_data = result.unwrap();
-        let pem_string = String::from_utf8(pem_data).unwrap();
-        assert!(pem_string.contains("-----BEGIN PRIVATE KEY-----"));
-        assert!(pem_string.contains("-----END PRIVATE KEY-----"));
-        assert!(pem_string.contains(&base64_encode(key_data)));
     }
 
     #[test]

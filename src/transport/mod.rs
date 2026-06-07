@@ -3,6 +3,7 @@
 //! Handles WebSocket transport, TLS connections, and Ziti protocol implementation
 //! for secure communication with edge routers.
 
+pub mod http;
 pub mod protocol;
 pub mod tls;
 pub mod websocket;
