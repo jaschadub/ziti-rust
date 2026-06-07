@@ -9,26 +9,35 @@ use crate::transport::http::controller_client;
 use serde::Deserialize;
 use std::time::Duration;
 
-/// Represents a Ziti service returned from the controller
+/// Represents a Ziti service returned from the controller.
+///
+/// Field types are intentionally permissive (`serde_json::Value`) for
+/// `configs`, `config`, `permissions`, and `tags` because the v2
+/// controller returns richer shapes than a flat list of strings (e.g.
+/// `configs` is an array of `{configId, configType, name, data}`
+/// objects), and we want the deserializer to accept whatever the
+/// controller produces without breaking on schema drift.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Service {
-    /// Unique identifier for the service
+    /// Unique identifier for the service.
     pub id: String,
-    /// Human-readable name of the service
+    /// Human-readable name of the service.
     pub name: String,
-    /// Service configuration type references
-    #[serde(rename = "configs", default)]
-    pub configs: Vec<String>,
-    /// Service configuration
-    #[serde(rename = "config", default)]
+    /// Per-service config bindings (free-form; v2 emits objects).
+    #[serde(default)]
+    pub configs: serde_json::Value,
+    /// Aggregated config payload, if the controller includes it.
+    #[serde(default)]
     pub config: serde_json::Value,
-    /// Encryption required flag
+    /// Whether end-to-end encryption is required for this service.
     #[serde(rename = "encryptionRequired", default)]
     pub encryption_required: bool,
-    /// Service permissions
-    #[serde(rename = "permissions", default)]
-    pub permissions: Vec<String>,
-    /// Service tags
+    /// Caller's permissions on the service (typically `["Dial"]` /
+    /// `["Bind"]` strings, but treated as opaque JSON for forward
+    /// compatibility).
+    #[serde(default)]
+    pub permissions: serde_json::Value,
+    /// Service tags as returned by the controller.
     #[serde(default)]
     pub tags: serde_json::Value,
 }
@@ -139,18 +148,18 @@ mod tests {
         let service = Service {
             id: "service-123".to_string(),
             name: "test-service".to_string(),
-            configs: vec!["config1".to_string(), "config2".to_string()],
+            configs: serde_json::json!(["config1", "config2"]),
             config: serde_json::json!({"host": "localhost", "port": 8080}),
             encryption_required: true,
-            permissions: vec!["Dial".to_string()],
+            permissions: serde_json::json!(["Dial"]),
             tags: serde_json::json!({"environment": "test"}),
         };
 
         assert_eq!(service.id, "service-123");
         assert_eq!(service.name, "test-service");
-        assert_eq!(service.configs.len(), 2);
+        assert_eq!(service.configs.as_array().unwrap().len(), 2);
         assert!(service.encryption_required);
-        assert_eq!(service.permissions, vec!["Dial"]);
+        assert_eq!(service.permissions, serde_json::json!(["Dial"]));
     }
 
     #[test]
@@ -158,10 +167,10 @@ mod tests {
         let service = Service {
             id: "clone-test".to_string(),
             name: "clone-service".to_string(),
-            configs: vec![],
+            configs: serde_json::Value::Null,
             config: serde_json::Value::Null,
             encryption_required: false,
-            permissions: vec![],
+            permissions: serde_json::Value::Null,
             tags: serde_json::Value::Null,
         };
 
@@ -185,15 +194,32 @@ mod tests {
         }
         "#;
 
-        let result: Result<Service, _> = serde_json::from_str(json_data);
-        assert!(result.is_ok());
-
-        let service = result.unwrap();
+        let service: Service = serde_json::from_str(json_data).unwrap();
         assert_eq!(service.id, "service-456");
         assert_eq!(service.name, "test-service");
-        assert_eq!(service.configs, vec!["config1"]);
+        assert_eq!(service.configs, serde_json::json!(["config1"]));
         assert!(service.encryption_required);
-        assert_eq!(service.permissions, vec!["Dial", "Bind"]);
+        assert_eq!(service.permissions, serde_json::json!(["Dial", "Bind"]));
+    }
+
+    #[test]
+    fn test_service_deserialization_accepts_v2_object_configs() {
+        // v2 controller returns `configs` as an array of objects, not
+        // strings. Loader must accept either shape.
+        let json_data = r#"
+        {
+            "id": "v2-service",
+            "name": "v2",
+            "configs": [
+              {"configId": "abc", "configType": "intercept.v1", "name": "x", "data": {"addr": "host"}}
+            ],
+            "permissions": ["Dial"]
+        }
+        "#;
+
+        let service: Service = serde_json::from_str(json_data).unwrap();
+        assert_eq!(service.id, "v2-service");
+        assert!(service.configs.is_array());
     }
 
     #[test]
@@ -205,15 +231,12 @@ mod tests {
         }
         "#;
 
-        let result: Result<Service, _> = serde_json::from_str(json_data);
-        assert!(result.is_ok());
-
-        let service = result.unwrap();
+        let service: Service = serde_json::from_str(json_data).unwrap();
         assert_eq!(service.id, "minimal-service");
         assert_eq!(service.name, "minimal");
-        assert_eq!(service.configs, Vec::<String>::new());
+        assert!(service.configs.is_null());
         assert!(!service.encryption_required);
-        assert_eq!(service.permissions, Vec::<String>::new());
+        assert!(service.permissions.is_null());
     }
 
     #[test]
@@ -267,10 +290,10 @@ mod tests {
         let service = Service {
             id: "debug-service".to_string(),
             name: "debug-test".to_string(),
-            configs: vec![],
+            configs: serde_json::Value::Null,
             config: serde_json::Value::Null,
             encryption_required: false,
-            permissions: vec![],
+            permissions: serde_json::Value::Null,
             tags: serde_json::Value::Null,
         };
 
@@ -295,16 +318,16 @@ mod tests {
         let service = Service {
             id: "complex-service".to_string(),
             name: "complex-test".to_string(),
-            configs: vec!["intercept.v1".to_string(), "host.v1".to_string()],
+            configs: serde_json::json!(["intercept.v1", "host.v1"]),
             config: complex_config.clone(),
             encryption_required: true,
-            permissions: vec!["Dial".to_string(), "Bind".to_string()],
+            permissions: serde_json::json!(["Dial", "Bind"]),
             tags: serde_json::json!({"type": "web-service", "priority": "high"}),
         };
 
         assert_eq!(service.config, complex_config);
-        assert_eq!(service.configs.len(), 2);
+        assert_eq!(service.configs.as_array().unwrap().len(), 2);
         assert!(service.encryption_required);
-        assert_eq!(service.permissions.len(), 2);
+        assert_eq!(service.permissions.as_array().unwrap().len(), 2);
     }
 }
