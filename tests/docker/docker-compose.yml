@@ -1,0 +1,40 @@
+# Single-container OpenZiti for integration testing.
+#
+# The `openziti/quickstart` image runs a controller + edge router in one
+# process with default credentials (admin/admin) and is the canonical
+# "smoke test" setup published by the OpenZiti project. We expose:
+#   - 1280: controller edge management/auth API (HTTPS)
+#   - 3022: router control channel
+#   - 10080: edge router WS endpoint for SDK clients
+#
+# The advertised hostnames are pinned to `localhost` so the controller
+# tells SDK clients on the runner to reach the router at
+# wss://localhost:10080/ws, which the published port maps to the
+# container.
+
+services:
+  ziti:
+    image: openziti/quickstart:latest
+    container_name: ziti-quickstart
+    environment:
+      ZITI_USER: admin
+      ZITI_PWD: admin
+      ZITI_CTRL_ADVERTISED_ADDRESS: localhost
+      ZITI_CTRL_ADVERTISED_PORT: "1280"
+      ZITI_CTRL_EDGE_ADVERTISED_ADDRESS: localhost
+      ZITI_CTRL_EDGE_ADVERTISED_PORT: "1280"
+      ZITI_ROUTER_ADVERTISED_ADDRESS: localhost
+      ZITI_ROUTER_PORT: "3022"
+      ZITI_ROUTER_LISTENER_BIND_PORT: "10080"
+    ports:
+      - "1280:1280"
+      - "3022:3022"
+      - "10080:10080"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "curl -skf https://localhost:1280/edge/management/v1/version || exit 1"
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
