@@ -8,6 +8,7 @@ use crate::config::ListenOptions;
 use crate::context::Context;
 use crate::error::{ZitiError, ZitiResult};
 use crate::service::list_services;
+use crate::transport::http::controller_client;
 use crate::transport::protocol::{ContentType, ZitiMessage};
 use crate::transport::{TlsConfig, WebSocketTransport};
 use bytes::Bytes;
@@ -423,11 +424,7 @@ async fn get_available_edge_routers(context: &Context) -> ZitiResult<Vec<EdgeRou
     // Get API session for authentication
     let api_session = context.session_manager().get_api_session().await?;
 
-    // Create HTTP client
-    let client = reqwest::Client::builder()
-        .timeout(context.connect_timeout())
-        .build()
-        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
+    let client = controller_client(context.identity_manager(), context.connect_timeout()).await?;
 
     // Build edge routers endpoint URL
     let edge_routers_url = format!(
@@ -512,11 +509,7 @@ async fn create_terminator(
     // Get API session for authentication
     let api_session = context.session_manager().get_api_session().await?;
 
-    // Create HTTP client
-    let client = reqwest::Client::builder()
-        .timeout(context.connect_timeout())
-        .build()
-        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
+    let client = controller_client(context.identity_manager(), context.connect_timeout()).await?;
 
     // Build terminators endpoint URL
     let terminators_url = format!(
@@ -768,10 +761,7 @@ async fn run_demux(
 async fn delete_terminator(context: &Context, terminator_id: &str) -> ZitiResult<()> {
     let api_session = context.session_manager().get_api_session().await?;
 
-    let client = reqwest::Client::builder()
-        .timeout(context.connect_timeout())
-        .build()
-        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
+    let client = controller_client(context.identity_manager(), context.connect_timeout()).await?;
 
     let url = format!(
         "{}/terminators/{}",

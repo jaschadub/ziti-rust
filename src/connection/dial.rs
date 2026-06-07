@@ -6,6 +6,7 @@ use crate::context::Context;
 use crate::connection::ZitiStream;
 use crate::error::{ZitiError, ZitiResult};
 use crate::service::list_services;
+use crate::transport::http::controller_client;
 use crate::transport::protocol::{ContentType, ZitiMessage};
 use crate::transport::{TlsConfig, WebSocketTransport};
 use bytes::Bytes;
@@ -106,16 +107,9 @@ struct TerminatorsResponse {
 
 /// Get terminators (edge routers) for a service
 async fn get_service_terminators(service_id: &str, context: &Context) -> ZitiResult<Vec<EdgeRouter>> {
-    // Get API session for authentication
     let api_session = context.session_manager().get_api_session().await?;
+    let client = controller_client(context.identity_manager(), context.connect_timeout()).await?;
 
-    // Create HTTP client
-    let client = reqwest::Client::builder()
-        .timeout(context.connect_timeout())
-        .build()
-        .map_err(|e| ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
-
-    // Build terminators endpoint URL
     let terminators_url = format!(
         "{}/services/{}/terminators",
         context.identity_manager().zt_api().trim_end_matches('/'),

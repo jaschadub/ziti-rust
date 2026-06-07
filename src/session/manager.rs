@@ -5,6 +5,7 @@
 use super::{api_session, ApiSession, NetworkSession};
 use crate::error::{ZitiError, ZitiResult};
 use crate::identity::IdentityManager;
+use crate::transport::http::controller_client;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,12 +101,7 @@ impl SessionManager {
         // Ensure we have a valid API session to authorize the request.
         let api_session = self.get_api_session().await?;
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| {
-                ZitiError::ConfigError(format!("Failed to create HTTP client: {}", e))
-            })?;
+        let client = controller_client(&self.identity_manager, Duration::from_secs(30)).await?;
 
         let sessions_url = format!(
             "{}/sessions",
