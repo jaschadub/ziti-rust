@@ -59,26 +59,30 @@ for attempt in $(seq 1 $LOGIN_ATTEMPTS); do
     sleep $LOGIN_DELAY
 done
 
-log "creating dial + bind service-policies (idempotent)"
-ziti_in edge create service-policy "${DIAL_SERVICE}-dial" Dial \
-    --identity-roles "@$IDENTITY_NAME" \
-    --service-roles "@$DIAL_SERVICE" || true
-ziti_in edge create service-policy "${LISTEN_SERVICE}-dial" Dial \
-    --identity-roles "@$IDENTITY_NAME" \
-    --service-roles "@$LISTEN_SERVICE" || true
-ziti_in edge create service-policy "${LISTEN_SERVICE}-bind" Bind \
-    --identity-roles "@$IDENTITY_NAME" \
-    --service-roles "@$LISTEN_SERVICE" || true
-
-log "creating services (idempotent)"
-ziti_in edge create service "$DIAL_SERVICE" || true
-ziti_in edge create service "$LISTEN_SERVICE" || true
+# Each CI run starts with a fresh container (named volume is created
+# from scratch when `docker compose up -d --wait` runs), so we don't
+# need to script around existing entities. Create identity first so the
+# policies that reference it have a valid target.
+log "creating services"
+ziti_in edge create service "$DIAL_SERVICE"
+ziti_in edge create service "$LISTEN_SERVICE"
 
 log "creating identity $IDENTITY_NAME"
 JWT_PATH=/tmp/${IDENTITY_NAME}.jwt
-ziti_in edge delete identity "$IDENTITY_NAME" || true
-ziti_in edge create identity device "$IDENTITY_NAME" \
+# v2 ziti CLI: `create identity <name>` (no positional `device` type).
+ziti_in edge create identity "$IDENTITY_NAME" \
     --jwt-output-file "$JWT_PATH"
+
+log "creating dial + bind service-policies"
+ziti_in edge create service-policy "${DIAL_SERVICE}-dial" Dial \
+    --identity-roles "@$IDENTITY_NAME" \
+    --service-roles "@$DIAL_SERVICE"
+ziti_in edge create service-policy "${LISTEN_SERVICE}-dial" Dial \
+    --identity-roles "@$IDENTITY_NAME" \
+    --service-roles "@$LISTEN_SERVICE"
+ziti_in edge create service-policy "${LISTEN_SERVICE}-bind" Bind \
+    --identity-roles "@$IDENTITY_NAME" \
+    --service-roles "@$LISTEN_SERVICE"
 
 log "enrolling identity → standard Ziti JSON"
 STD_JSON_IN=/tmp/${IDENTITY_NAME}.json
