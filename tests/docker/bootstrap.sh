@@ -38,8 +38,26 @@ for _ in $(seq 1 60); do
     sleep 2
 done
 
-log "logging in to controller"
-ziti_in edge login "$CTRL_URL" -u admin -p admin -y
+# The container reports healthy as soon as the `ziti` agent socket is
+# alive, but the admin authenticator is provisioned a moment later
+# during the raft cluster bootstrap — first login attempts therefore
+# get 401. Retry until it sticks (same pattern as upstream's
+# wait-for-login service).
+log "logging in to controller (with retry for raft-bootstrap race)"
+LOGIN_ATTEMPTS=20
+LOGIN_DELAY=3
+for attempt in $(seq 1 $LOGIN_ATTEMPTS); do
+    if ziti_in edge login "$CTRL_URL" -u admin -p admin -y >/dev/null 2>&1; then
+        log "login succeeded on attempt $attempt"
+        break
+    fi
+    if [[ $attempt -eq $LOGIN_ATTEMPTS ]]; then
+        log "login still failing after $LOGIN_ATTEMPTS attempts; surfacing real error"
+        ziti_in edge login "$CTRL_URL" -u admin -p admin -y
+        exit 1
+    fi
+    sleep $LOGIN_DELAY
+done
 
 log "creating dial + bind service-policies (idempotent)"
 ziti_in edge create service-policy "${DIAL_SERVICE}-dial" Dial \
